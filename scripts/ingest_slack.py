@@ -10,10 +10,8 @@ sys.path.insert(0, str(project_root))
 
 from slack_sdk import WebClient
 
-from app.ingestion.chunk import chunk_documents
+from app.ingestion.realtime import index_documents
 from app.ingestion.slack_fetch import fetch_channel_messages, get_channel_id
-from app.rag.embed import embed_documents
-from app.rag.store import VectorStore
 from app.settings import settings
 
 
@@ -62,34 +60,21 @@ def main():
 
     print(f"Fetched {len(messages)} messages")
 
-    # Chunk messages
-    print("Chunking messages...")
-    chunks = chunk_documents(
+    # Index documents (chunk, embed, store)
+    print("Indexing documents (chunking, embedding, storing)...")
+    num_chunks = index_documents(
         messages, chunk_size=args.chunk_size, overlap=args.chunk_overlap
     )
 
-    if not chunks:
+    if not num_chunks:
         print("No chunks created. Exiting.")
         return
 
-    print(f"Created {len(chunks)} chunks")
+    print(f"\n✅ Successfully indexed {num_chunks} chunks from {len(messages)} messages")
 
-    # Embed chunks
-    print("Generating embeddings (this may take a while)...")
-    embedded_chunks = embed_documents(chunks)
-
-    if not embedded_chunks:
-        print("No embeddings generated. Exiting.")
-        return
-
-    print(f"Generated embeddings for {len(embedded_chunks)} chunks")
-
-    # Upsert to vector store
-    print("Upserting to vector store...")
+    # Show total count
+    from app.rag.store import VectorStore
     store = VectorStore()
-    store.upsert(embedded_chunks)
-
-    print(f"\n✅ Successfully indexed {len(embedded_chunks)} chunks from {len(messages)} messages")
     print(f"Total documents in vector store: {store.count()}")
 
 
