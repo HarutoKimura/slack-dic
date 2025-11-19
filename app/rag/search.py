@@ -1,11 +1,23 @@
 """Vector search functionality."""
 
-from typing import Any
+import logging
+from dataclasses import dataclass
 
 from app.rag.store import VectorStore
 
+logger = logging.getLogger(__name__)
 
-def search(query: str, top_k: int = 5) -> list[dict[str, Any]]:
+
+@dataclass
+class RetrievedChunk:
+    """A retrieved chunk with text, metadata, and similarity score."""
+
+    text: str
+    metadata: dict
+    score: float  # Similarity score in [0, 1], higher = more similar
+
+
+def search(query: str, top_k: int = 5) -> list[RetrievedChunk]:
     """
     Search for relevant documents in the vector store.
 
@@ -14,25 +26,41 @@ def search(query: str, top_k: int = 5) -> list[dict[str, Any]]:
         top_k: Number of results to return
 
     Returns:
-        List of search results with structure:
-            {
-                "id": "doc-id",
-                "text": "document text",
-                "metadata": {...},
-                "distance": 0.123
-            }
+        List of RetrievedChunk objects with similarity scores
     """
     store = VectorStore()
     results = store.query(query, top_k=top_k)
-    return results
+
+    chunks = []
+    for result in results:
+        # Convert distance to similarity (for cosine distance: similarity = 1 - distance)
+        distance = result.get("distance", 0.0)
+        similarity = 1.0 - distance
+
+        chunk = RetrievedChunk(
+            text=result.get("text", ""),
+            metadata=result.get("metadata", {}),
+            score=similarity,
+        )
+        chunks.append(chunk)
+
+        # Debug logging for scores
+        permalink = chunk.metadata.get("permalink", "N/A")
+        logger.debug(
+            "Retrieved chunk: score=%.4f, permalink=%s",
+            chunk.score,
+            permalink
+        )
+
+    return chunks
 
 
-def format_search_results(results: list[dict[str, Any]]) -> str:
+def format_search_results(results: list[RetrievedChunk]) -> str:
     """
     Format search results for display.
 
     Args:
-        results: List of search results
+        results: List of RetrievedChunk objects
 
     Returns:
         Formatted string of results
@@ -41,15 +69,14 @@ def format_search_results(results: list[dict[str, Any]]) -> str:
         return "No results found."
 
     output = []
-    for i, result in enumerate(results, 1):
-        metadata = result.get("metadata", {})
-        permalink = metadata.get("permalink", "")
-        text = result.get("text", "")[:200] + "..."  # Truncate for display
+    for i, chunk in enumerate(results, 1):
+        permalink = chunk.metadata.get("permalink", "")
+        text = chunk.text[:200] + "..."  # Truncate for display
 
         output.append(f"{i}. {text}")
         if permalink:
             output.append(f"   Source: {permalink}")
-        output.append(f"   Distance: {result.get('distance', 0.0):.4f}")
+        output.append(f"   Similarity: {chunk.score:.4f}")
         output.append("")
 
     return "\n".join(output)

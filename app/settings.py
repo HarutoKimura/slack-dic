@@ -27,6 +27,9 @@ class Settings(BaseSettings):
     realtime_index_enabled: bool = True
     realtime_index_channels: str = ""  # Comma-separated channel IDs or names (empty = all)
 
+    # RAG similarity threshold
+    min_similarity: float = 0.25  # Minimum similarity score to trust retrieved context (0.0-1.0)
+
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
