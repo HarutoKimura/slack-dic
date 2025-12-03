@@ -1,43 +1,13 @@
 # Slack RAG Bot
 
-A minimal Slack RAG (Retrieval-Augmented Generation) bot built with Python 3.11+, using OpenAI embeddings and GPT-5-mini for intelligent question answering over Slack message history.
+A Slack RAG (Retrieval-Augmented Generation) bot that acts as an intelligent knowledge base for your workspace. Ask questions via DM or @mention, and get answers based on your Slack message history.
 
-## Features
+## What It Does
 
-- **Real-time indexing**: Automatically indexes new messages as they arrive in channels where the bot is present
-- **Batch indexing**: Fetches and indexes historical messages from Slack channels
-- Chunks text into manageable pieces with overlap
-- Generates embeddings using OpenAI's `text-embedding-3-small`
-- Stores vectors in local Chroma database with idempotent upserts
-- Answers questions using GPT-5-mini with context from relevant messages
-- Provides source Slack permalinks with answers
-- Supports both Socket Mode (live bot) and CLI interfaces
-
-## Architecture
-
-```
-.
-├── app/
-│   ├── main.py              # Entry point: Socket Mode or CLI
-│   ├── settings.py          # Pydantic settings loader
-│   ├── slack_app.py         # Bolt for Python app definition
-│   ├── ingestion/
-│   │   ├── slack_fetch.py   # Fetch Slack messages (batch)
-│   │   ├── chunk.py         # Text chunking
-│   │   └── realtime.py      # Real-time message indexing
-│   ├── rag/
-│   │   ├── embed.py         # OpenAI embeddings
-│   │   ├── store.py         # Chroma vector DB
-│   │   ├── search.py        # Vector search
-│   │   └── answer.py        # LLM summarization
-│   └── utils/
-│       └── slack_links.py   # Slack permalink helpers
-├── scripts/
-│   ├── ingest_slack.py      # Bulk indexing script
-│   └── ask_cli.py           # CLI testing script
-├── .env                     # Environment variables (not in git)
-└── .env.example             # Example environment variables
-```
+- **Ask via DM**: Send a direct message to the bot → it searches ALL indexed channels → returns an answer with sources
+- **Ask via @mention**: Mention the bot in any channel → get answers from all indexed messages
+- **Auto-indexing**: New messages are automatically indexed in real-time
+- **Startup catch-up**: Missed messages while offline are indexed when the bot starts
 
 ## Quick Start
 
@@ -46,37 +16,96 @@ A minimal Slack RAG (Retrieval-Augmented Generation) bot built with Python 3.11+
 uv sync
 uv pip install -e .
 
-# 2. Configure your .env file
+# 2. Configure environment
 cp .env.example .env
 # Edit .env with your API keys
 
-# 3. Start the bot
-uv run slack-rag-bot
+# 3. Join all public channels & index messages
+python scripts/join_all_channels.py
+python scripts/ingest_all_channels.py
+
+# 4. Start the bot
+python -m app.main
+```
+
+## Architecture
+
+```
+.
+├── app/
+│   ├── main.py              # Entry point with startup indexing
+│   ├── settings.py          # Configuration (Pydantic)
+│   ├── slack_app.py         # Slack event handlers (DM, mention, real-time)
+│   ├── ingestion/
+│   │   ├── slack_fetch.py   # Fetch Slack messages
+│   │   ├── chunk.py         # Smart text chunking
+│   │   ├── realtime.py      # Real-time message indexing
+│   │   └── startup.py       # Startup catch-up indexing
+│   ├── rag/
+│   │   ├── embed.py         # OpenAI embeddings
+│   │   ├── store.py         # ChromaDB vector store
+│   │   ├── search.py        # Vector similarity search
+│   │   └── answer.py        # LLM answer generation
+│   └── utils/
+│       └── slack_links.py   # Slack permalink helpers
+├── scripts/
+│   ├── ingest_all_channels.py  # Index all public channels
+│   ├── ingest_slack.py         # Index single channel
+│   ├── join_all_channels.py    # Bot joins all public channels
+│   └── ask_cli.py              # CLI testing
+├── .chroma/                 # Vector database (local storage)
+└── .env                     # Environment variables
 ```
 
 ## Setup
 
 ### 1. Prerequisites
 
-- Python 3.11 or higher
+- Python 3.11+
 - [uv](https://github.com/astral-sh/uv) package manager
 - OpenAI API key
-- Slack Bot Token (with appropriate scopes)
-- Slack App Token (optional, for Socket Mode)
+- Slack workspace with admin access
 
-### 2. Install Dependencies
+### 2. Create Slack App
 
-```bash
-# Install dependencies
-uv sync
+Go to [api.slack.com/apps](https://api.slack.com/apps) → **Create New App**
 
-# Install the package in editable mode (required for imports to work)
-uv pip install -e .
-```
+#### OAuth Scopes (Bot Token Scopes)
 
-### 3. Configure Environment Variables
+| Scope | Purpose |
+|-------|---------|
+| `channels:history` | Read messages in public channels |
+| `channels:read` | List public channels |
+| `channels:join` | Join public channels automatically |
+| `groups:history` | Read messages in private channels |
+| `groups:read` | List private channels |
+| `chat:write` | Send messages |
+| `im:history` | Read DM messages |
+| `im:read` | Access DM info |
+| `im:write` | Send DM replies |
+| `app_mentions:read` | Respond to @mentions |
+| `users:read` | Get user info |
+| `users:read.email` | Get user emails |
 
-Copy `.env.example` to `.env` and fill in your credentials:
+#### Event Subscriptions
+
+Subscribe to these bot events:
+- `app_mention` - Respond to @mentions
+- `message.channels` - Index public channel messages
+- `message.groups` - Index private channel messages
+- `message.im` - Receive DM questions
+
+#### App Home
+
+- Enable **Messages Tab**
+- Check **"Allow users to send messages"**
+
+#### Socket Mode
+
+- Enable Socket Mode
+- Generate App-Level Token with `connections:write` scope
+
+### 3. Configure Environment
 
 ```bash
 cp .env.example .env
@@ -88,283 +117,200 @@ Edit `.env`:
 # Required
 OPENAI_API_KEY=sk-...
 SLACK_BOT_TOKEN=xoxb-...
-
-# Required for Socket Mode (use either variable name)
 SLACK_APP_TOKEN=xapp-...
-# OR
-SOCKET_MODE_TOKEN=xapp-...
 
-# Optional - Real-time indexing
+# Optional - Indexing
 REALTIME_INDEX_ENABLED=true
-REALTIME_INDEX_CHANNELS=
+STARTUP_INDEX_ENABLED=true
+STARTUP_INDEX_HOURS=24
 
-# Optional (with defaults)
+# Optional - RAG
+MIN_SIMILARITY=0.25
 CHROMA_PERSIST_DIRECTORY=.chroma
 EMBEDDING_MODEL=text-embedding-3-small
 LLM_MODEL=gpt-5-mini-2025-08-07
 ```
 
-### 4. Slack App Configuration
+### 4. Install & Run
 
-Create a Slack app at https://api.slack.com/apps with the following:
+```bash
+# Install dependencies
+uv sync
+uv pip install -e .
 
-**OAuth & Permissions - Bot Token Scopes:**
-- `channels:history` - View messages in public channels
-- `channels:read` - View basic channel info
-- `groups:history` - View messages in private channels (required for private channels)
-- `groups:read` - View basic info about private channels (required for private channels)
-- `chat:write` - Send messages
-- `app_mentions:read` - View messages that mention your bot
-- `commands` - Add slash commands (optional)
+# Join all public channels (one-time)
+python scripts/join_all_channels.py
 
-**Event Subscriptions:**
-- Enable Events
-- Subscribe to `app_mention` event
-- Subscribe to `message.channels` event (for real-time indexing in public channels)
-- Subscribe to `message.groups` event (for real-time indexing in private channels, optional)
+# Index historical messages (one-time)
+python scripts/ingest_all_channels.py --limit 5000
 
-**Socket Mode (recommended):**
-- Enable Socket Mode
-- Generate an App-Level Token with `connections:write` scope
-
-**Install App:**
-- Install the app to your workspace
-- Copy the Bot Token and App Token to `.env`
+# Start the bot
+python -m app.main
+```
 
 ## Usage
 
-### Index Slack Messages
+### Ask Questions
 
-#### Batch Indexing (Historical Messages)
-
-Fetch and index historical messages from a channel:
-
-```bash
-uv run python scripts/ingest_slack.py --channel "#all-slack-rag-test" --limit 2000
+**Via DM (recommended for searching all channels):**
+```
+You: What is our deployment process?
+Bot: Based on messages from #engineering and #devops...
+     Sources: [links]
 ```
 
-Options:
-- `--channel`: Channel name (with or without #)
-- `--limit`: Max messages to fetch (default: 2000)
-- `--chunk-size`: Chunk size in chars (default: 600)
-- `--chunk-overlap`: Overlap between chunks (default: 100)
-
-#### Real-time Indexing (New Messages)
-
-When the Slack bot is running in Socket Mode, it automatically indexes new messages in channels where the bot is present. No additional configuration needed!
-
-**Configuration (optional):**
-
-Add these to your `.env` file to control real-time indexing:
-
-```env
-# Enable/disable real-time indexing (default: true)
-REALTIME_INDEX_ENABLED=true
-
-# Only index messages from specific channels (default: all channels)
-# Comma-separated list of channel IDs (e.g., C01234567,C89012345)
-REALTIME_INDEX_CHANNELS=
+**Via @mention (in any channel):**
 ```
-
-**How it works:**
-1. Invite the bot to a channel: `/invite @your-bot`
-2. Start the bot: `uv run python app/main.py`
-3. New messages in that channel are automatically indexed
-4. Ask questions immediately without re-running batch ingestion
-
-**Important:** The bot only indexes messages in channels where it's a member. Make sure to invite the bot to channels you want to index.
-
-### Ask Questions (CLI)
-
-Test the RAG system from the command line:
-
-```bash
-uv run python scripts/ask_cli.py --q "What is RAG?"
-```
-
-Options:
-- `--q`: Your question
-- `--top-k`: Number of context documents (default: 5)
-
-### Run the Slack Bot
-
-#### Socket Mode (Recommended)
-
-If you have `SLACK_APP_TOKEN` or `SOCKET_MODE_TOKEN` configured:
-
-```bash
-# Option 1: Using the installed CLI command (recommended)
-uv run slack-rag-bot
-
-# Option 2: Using Python module syntax
-uv run python -m app.main
-
-# Option 3: Direct file path
-uv run python app/main.py
-```
-
-The bot will:
-- **Automatically index new messages** in channels where it's a member
-- Listen for `@mentions` in channels
-- Respond to `/ask` slash commands
-- Reply in threads with answers and sources
-
-#### CLI Test Mode
-
-If Socket Mode token is not set, the app runs in interactive CLI mode:
-
-```bash
-uv run slack-rag-bot
-```
-
-### Interact with the Bot
-
-**Via @mention:**
-```
-@rag-bot What features were discussed in yesterday's standup?
+@rag-bot What was discussed about the new feature?
 ```
 
 **Via /ask command:**
 ```
-/ask What is our deployment process?
+/ask Who is responsible for the billing system?
 ```
-
-The bot will respond with an answer and source links:
-
-```
-Based on the channel history, the deployment process involves...
-
-Sources:
-- https://workspace.slack.com/archives/C.../p...
-- https://workspace.slack.com/archives/C.../p...
-```
-
-## Project Structure
-
-### Core Modules
-
-- **app/settings.py**: Environment configuration using Pydantic
-- **app/ingestion/slack_fetch.py**: Slack API integration for batch message retrieval
-- **app/ingestion/chunk.py**: Text chunking with overlap
-- **app/ingestion/realtime.py**: Real-time message indexing API
-- **app/rag/embed.py**: OpenAI embedding generation with retry logic
-- **app/rag/store.py**: Chroma vector database interface with idempotent upserts
-- **app/rag/search.py**: Vector similarity search
-- **app/rag/answer.py**: LLM-based answer generation
-- **app/slack_app.py**: Slack Bolt app with event handlers (mentions, commands, messages)
-- **app/main.py**: Application entry point
 
 ### Scripts
 
-- **scripts/ingest_slack.py**: Bulk message indexing pipeline
-- **scripts/ask_cli.py**: Command-line question interface
+```bash
+# Index all public channels
+python scripts/ingest_all_channels.py --limit 5000
 
-## Technical Details
+# Index single channel
+python scripts/ingest_slack.py --channel "general" --limit 2000
 
-### Text Chunking
+# Join all public channels (bot must be member to index)
+python scripts/join_all_channels.py
 
-Messages are split into 400-800 character chunks with 80-120 character overlap to:
-- Fit within embedding context windows
-- Preserve semantic continuity
-- Improve retrieval accuracy
+# Dry run (see what will be indexed/joined)
+python scripts/ingest_all_channels.py --dry-run
+python scripts/join_all_channels.py --dry-run
 
-### Embeddings
+# Check vector store status
+python -c "from app.rag.store import VectorStore; print(f'Docs: {VectorStore().count()}')"
+```
 
-Uses OpenAI's `text-embedding-3-small` model:
-- 1536 dimensions
-- Cost-effective
-- High quality semantic representations
-- Automatic rate limit handling with exponential backoff
+## How It Works
 
-### Vector Store
+### Indexing Flow
 
-Chroma DB with:
-- Local persistence (`.chroma/` directory)
-- Cosine similarity search
-- Metadata storage for source attribution
-- Easy migration path to pgvector
+```
+Slack Message → Chunking → Embedding → ChromaDB
+                  ↓           ↓
+            600 chars    OpenAI API
+            smart split  text-embedding-3-small
+```
 
-### Answer Generation
+1. **Fetch**: Messages retrieved from Slack API
+2. **Chunk**: Split into ~600 char pieces at sentence boundaries
+3. **Embed**: Convert to 1536-dim vectors via OpenAI
+4. **Store**: Save in ChromaDB with metadata (channel, user, timestamp, permalink)
 
-GPT-5-mini (gpt-5-mini-2025-08-07) with:
-- Max completion tokens: 2000
-- Strict context-only answering
-- Source URL attribution
+### Search Flow
 
-## Environment Variables
+```
+Question → Embedding → Vector Search → Top 5 chunks → LLM → Answer
+                           ↓
+                      ChromaDB
+                      cosine similarity
+```
 
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `OPENAI_API_KEY` | Yes | - | OpenAI API key |
-| `SLACK_BOT_TOKEN` | Yes | - | Slack bot token (xoxb-...) |
-| `SLACK_APP_TOKEN` | Socket Mode | - | Socket Mode token (xapp-...) |
-| `SOCKET_MODE_TOKEN` | Socket Mode | - | Alternative name for SLACK_APP_TOKEN |
-| `CHROMA_PERSIST_DIRECTORY` | No | `.chroma` | Vector DB storage path |
-| `EMBEDDING_MODEL` | No | `text-embedding-3-small` | OpenAI embedding model |
-| `LLM_MODEL` | No | `gpt-5-mini-2025-08-07` | OpenAI chat model |
-| `REALTIME_INDEX_ENABLED` | No | `true` | Enable real-time message indexing |
-| `REALTIME_INDEX_CHANNELS` | No | `""` (all) | Comma-separated channel IDs to index |
+1. **Embed question**: Same embedding model as indexing
+2. **Search**: Find most similar chunks in vector DB
+3. **Generate**: LLM creates answer using retrieved context
+4. **Cite**: Include source permalinks
 
-**Note:** Use either `SLACK_APP_TOKEN` or `SOCKET_MODE_TOKEN` for Socket Mode (both work, use whichever you prefer).
+### Auto-Indexing
+
+| Trigger | What happens |
+|---------|--------------|
+| Bot starts | Index last 24 hours from all joined channels |
+| New message in channel | Index immediately (real-time) |
+| DM received | Search all indexed channels, return answer |
+
+## Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `OPENAI_API_KEY` | required | OpenAI API key |
+| `SLACK_BOT_TOKEN` | required | Bot token (xoxb-...) |
+| `SLACK_APP_TOKEN` | required | App token for Socket Mode (xapp-...) |
+| `CHROMA_PERSIST_DIRECTORY` | `.chroma` | Vector DB location |
+| `EMBEDDING_MODEL` | `text-embedding-3-small` | OpenAI embedding model |
+| `LLM_MODEL` | `gpt-5-mini-2025-08-07` | OpenAI chat model |
+| `MIN_SIMILARITY` | `0.25` | Minimum similarity threshold |
+| `REALTIME_INDEX_ENABLED` | `true` | Auto-index new messages |
+| `REALTIME_INDEX_CHANNELS` | `""` (all) | Limit to specific channel IDs |
+| `STARTUP_INDEX_ENABLED` | `true` | Catch-up index on startup |
+| `STARTUP_INDEX_HOURS` | `24` | Hours to look back on startup |
 
 ## Troubleshooting
 
-### "ModuleNotFoundError: No module named 'app'"
+### "Sending messages to this app has been turned off"
 
-If you get this error when running the bot:
+1. Go to Slack App settings → **App Home**
+2. Enable **Messages Tab**
+3. Check **"Allow users to send Slash commands and messages"**
+4. Reinstall app to workspace
 
+### "not_in_channel" error when indexing
+
+The bot must be a member of channels to read messages:
 ```bash
-# Solution: Install the package in editable mode
-uv pip install -e .
-
-# Then use one of these commands:
-uv run slack-rag-bot          # Recommended
-uv run python -m app.main     # Alternative
+python scripts/join_all_channels.py
 ```
 
-### "Channel not found"
+### Bot doesn't respond to DMs
 
-Make sure:
-1. The bot is invited to the channel (`/invite @your-bot`)
-2. The bot has `channels:read` and `channels:history` scopes
-3. Channel name is correct (check case sensitivity)
+1. Check `im:history`, `im:read`, `im:write` scopes are added
+2. Subscribe to `message.im` event
+3. Reinstall app after scope changes
 
-### "No results found"
+### Low quality answers / wrong sources
 
-- Verify the vector store has data: check `.chroma/` directory
-- Re-run ingestion if empty
-- Try broader search terms
+- Increase indexed messages: `--limit 10000`
+- Check similarity threshold in `.env`: `MIN_SIMILARITY=0.2`
+- Verify content is indexed: check `store.count()`
 
-### Rate limit errors
+### Check indexed document count
 
-The system includes automatic retry with exponential backoff. For large ingestion jobs:
-- Reduce batch size in `embed.py`
-- Add delays between batches
-- Use a higher rate limit tier
+```bash
+python -c "from app.rag.store import VectorStore; print(VectorStore().count())"
+```
 
-### Socket Mode connection issues
+### Clear and re-index
 
-Check:
-1. `SLACK_APP_TOKEN` is set correctly
-2. Socket Mode is enabled in your Slack app settings
-3. App has required event subscriptions
+```bash
+rm -rf .chroma/
+python scripts/ingest_all_channels.py --limit 5000
+```
 
-## Future Enhancements
+## Production Deployment
 
-- [x] Incremental message updates (real-time indexing) - **Implemented!**
-- [ ] Multiple channel support (batch indexing)
-- [ ] Enhanced thread awareness for retrieval
-- [ ] User-based filtering
-- [ ] PostgreSQL + pgvector for production
-- [ ] Hybrid search (keyword + semantic)
-- [ ] Message metadata filtering (date, author, etc.)
-- [ ] Answer quality evaluation
-- [ ] Background queue for real-time indexing (async processing)
+### Phase 1: Local Testing
+1. Run on your machine
+2. Vector DB stored in `.chroma/` folder
+3. Good for validating with real data
+
+### Phase 2: Cloud Deployment
+Options for 24/7 operation:
+- **Server**: AWS EC2, GCP, DigitalOcean
+- **Container**: Docker + any cloud provider
+- **PaaS**: Railway, Render, Heroku
+
+Vector DB options for production:
+- **Pinecone**: Managed vector DB (recommended)
+- **Weaviate Cloud**: Alternative managed option
+- **Self-hosted ChromaDB**: On your server
+- **PostgreSQL + pgvector**: If you need SQL
+
+## Data Storage
+
+| Data | Location | Persistence |
+|------|----------|-------------|
+| Vector embeddings | `.chroma/` | Local filesystem |
+| Configuration | `.env` | Local file |
+| Slack messages | Slack API | Fetched on-demand |
 
 ## License
 
 MIT
-
-## Contributing
-
-This is a minimal reference implementation. Feel free to fork and extend!
