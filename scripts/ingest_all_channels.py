@@ -16,9 +16,14 @@ from app.ingestion.slack_fetch import fetch_channel_messages
 from app.settings import settings
 
 
-def get_all_public_channels(client: WebClient) -> list[dict]:
+def get_all_public_channels(client: WebClient, only_joined: bool = False) -> list[dict]:
     """
-    Fetch all public channels the bot has access to.
+    Fetch all public channels.
+
+    Args:
+        client: Slack WebClient instance
+        only_joined: If True, only return channels bot is a member of.
+                     If False, return ALL public channels (requires channels:read scope)
 
     Returns:
         List of channel dicts with 'id' and 'name' keys
@@ -36,13 +41,16 @@ def get_all_public_channels(client: WebClient) -> list[dict]:
             )
 
             for channel in response["channels"]:
-                # Only include channels where bot is a member
-                if channel.get("is_member", False):
-                    channels.append({
-                        "id": channel["id"],
-                        "name": channel["name"],
-                        "num_members": channel.get("num_members", 0),
-                    })
+                # Filter by membership if requested
+                if only_joined and not channel.get("is_member", False):
+                    continue
+
+                channels.append({
+                    "id": channel["id"],
+                    "name": channel["name"],
+                    "num_members": channel.get("num_members", 0),
+                    "is_member": channel.get("is_member", False),
+                })
 
             # Check for more pages
             cursor = response.get("response_metadata", {}).get("next_cursor")
@@ -83,6 +91,11 @@ def main():
         action="store_true",
         help="List channels without indexing",
     )
+    parser.add_argument(
+        "--only-joined",
+        action="store_true",
+        help="Only index channels the bot has joined (default: all public channels)",
+    )
 
     args = parser.parse_args()
 
@@ -91,16 +104,21 @@ def main():
     client = WebClient(token=settings.slack_bot_token)
 
     # Get all public channels
-    print("Fetching all public channels...")
-    channels = get_all_public_channels(client)
+    print("Fetching public channels...")
+    channels = get_all_public_channels(client, only_joined=args.only_joined)
 
     if not channels:
-        print("No channels found. Make sure the bot is added to at least one channel.")
+        print("No channels found.")
         return
 
-    print(f"\nFound {len(channels)} channels the bot is a member of:")
+    if args.only_joined:
+        print(f"\nFound {len(channels)} channels the bot is a member of:")
+    else:
+        print(f"\nFound {len(channels)} public channels:")
+
     for ch in channels:
-        print(f"  - #{ch['name']} ({ch['id']}) - {ch['num_members']} members")
+        member_status = "✓ joined" if ch["is_member"] else "not joined"
+        print(f"  - #{ch['name']} ({ch['id']}) - {ch['num_members']} members [{member_status}]")
 
     if args.dry_run:
         print("\n[Dry run] No indexing performed.")

@@ -1,5 +1,7 @@
 """Main entry point for the Slack RAG bot."""
 
+from slack_sdk import WebClient
+
 from app.rag.answer import ask
 from app.settings import settings
 
@@ -12,6 +14,13 @@ def main():
     Otherwise, runs a simple CLI test prompt.
     """
     if settings.get_socket_mode_token():
+        # Run startup catch-up indexing before starting the bot
+        if settings.startup_index_enabled:
+            from app.ingestion.startup import startup_index
+
+            client = WebClient(token=settings.slack_bot_token)
+            startup_index(client, hours=settings.startup_index_hours)
+
         # Start Socket Mode
         from app.slack_app import start_socket_mode
 
