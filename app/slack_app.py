@@ -16,6 +16,12 @@ logger = logging.getLogger(__name__)
 app = App(token=settings.slack_bot_token)
 
 
+def is_dm_channel(channel_id: str) -> bool:
+    """Check if a channel ID is a DM (direct message) channel."""
+    # DM channels start with 'D', group DMs start with 'G' (for MPDMs)
+    return channel_id.startswith("D")
+
+
 @app.event("app_mention")
 def handle_mention(event, say, logger):
     """Handle @mention of the bot."""
@@ -84,19 +90,36 @@ def handle_ask_command(ack, command, say, logger):
 
 
 @app.event("message")
-def handle_message(event, client):
-    """Handle new messages in channels for real-time indexing."""
-    # Check if real-time indexing is enabled
-    if not settings.realtime_index_enabled:
-        return
-
+def handle_message(event, client, say):
+    """Handle new messages - DMs for Q&A, channels for real-time indexing."""
     try:
         # Skip bot messages
         if event.get("bot_id") or event.get("subtype") == "bot_message":
             return
 
         # Skip messages without text
-        if not event.get("text", "").strip():
+        text = event.get("text", "").strip()
+        if not text:
+            return
+
+        channel_id = event.get("channel", "")
+
+        # Handle DM messages - treat as questions
+        if is_dm_channel(channel_id):
+            logger.info(f"Received DM from user {event.get('user')}: {text[:50]}...")
+            print(f"[DM DEBUG] Question received: {text}")
+
+            # Generate answer from indexed messages across all channels
+            answer = ask(text, debug=True)
+            print(f"[DM DEBUG] Answer generated: {answer[:100]}...")
+
+            # Reply in DM
+            say(text=answer)
+            logger.info("Sent DM response successfully")
+            return
+
+        # For non-DM messages: real-time indexing
+        if not settings.realtime_index_enabled:
             return
 
         # Channel filtering (if configured)
@@ -104,7 +127,6 @@ def handle_message(event, client):
             allowed_channels = [
                 ch.strip() for ch in settings.realtime_index_channels.split(",")
             ]
-            channel_id = event.get("channel", "")
 
             # Check if channel ID or name is in allowed list
             # Note: For channel names, we'd need to resolve them, but for simplicity
@@ -118,7 +140,7 @@ def handle_message(event, client):
         # Index the message
         logger.info(
             "Indexing new message: channel=%s ts=%s user=%s",
-            event.get("channel"),
+            channel_id,
             event.get("ts"),
             event.get("user", "unknown"),
         )
@@ -128,13 +150,19 @@ def handle_message(event, client):
         logger.info(
             "Indexed message ts=%s channel=%s into %d chunks",
             event.get("ts"),
-            event.get("channel"),
+            channel_id,
             num_chunks,
         )
 
     except Exception as e:
         # Log error but don't crash the app
-        logger.error("Error indexing message: %s", e, exc_info=True)
+        logger.error("Error handling message: %s", e, exc_info=True)
+        # For DMs, try to send error message back to user
+        if is_dm_channel(event.get("channel", "")):
+            try:
+                say(text=f"Sorry, I encountered an error: {e}")
+            except Exception:
+                pass
 
 
 def start_socket_mode():

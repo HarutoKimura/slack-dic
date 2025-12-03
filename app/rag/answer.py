@@ -43,8 +43,14 @@ class AnswerGenerator:
         for i, chunk in enumerate(context_chunks, 1):
             text = chunk.text
             permalink = chunk.metadata.get("permalink", "")
+            channel_name = chunk.metadata.get("channel_name", "")
 
-            context_parts.append(f"[{i}] {text}")
+            # Include channel name in context for better LLM understanding
+            if channel_name:
+                context_parts.append(f"[{i}] (from #{channel_name}) {text}")
+            else:
+                context_parts.append(f"[{i}] {text}")
+
             if permalink:
                 sources.add(permalink)
 

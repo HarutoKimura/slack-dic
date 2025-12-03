@@ -7,6 +7,35 @@ from slack_sdk.errors import SlackApiError
 
 from app.utils.slack_links import get_permalink
 
+# Cache for channel ID -> channel name mapping
+_channel_name_cache: dict[str, str] = {}
+
+
+def get_channel_name(client: WebClient, channel_id: str) -> str:
+    """
+    Get channel name from channel ID (with caching).
+
+    Args:
+        client: Slack WebClient instance
+        channel_id: Channel ID
+
+    Returns:
+        Channel name or channel_id if not found
+    """
+    if channel_id in _channel_name_cache:
+        return _channel_name_cache[channel_id]
+
+    try:
+        response = client.conversations_info(channel=channel_id)
+        channel_name = response["channel"]["name"]
+        _channel_name_cache[channel_id] = channel_name
+        return channel_name
+    except SlackApiError as e:
+        # For DMs or inaccessible channels, return the ID
+        print(f"Could not get channel name for {channel_id}: {e}")
+        _channel_name_cache[channel_id] = channel_id
+        return channel_id
+
 
 def get_channel_id(client: WebClient, channel_name: str) -> str | None:
     """
@@ -49,6 +78,7 @@ def fetch_channel_messages(
         {
             "id": "ts-based-id",
             "channel": "Cxxxx",
+            "channel_name": "general",
             "text": "...",
             "user": "Uxxxx",
             "ts": "1712345678.9012",
@@ -58,6 +88,9 @@ def fetch_channel_messages(
     messages = []
     cursor = None
     fetched = 0
+
+    # Get channel name once for all messages
+    channel_name = get_channel_name(client, channel_id)
 
     try:
         while fetched < limit:
@@ -79,6 +112,7 @@ def fetch_channel_messages(
                 doc = {
                     "id": f"{channel_id}-{msg['ts']}",
                     "channel": channel_id,
+                    "channel_name": channel_name,
                     "text": msg["text"],
                     "user": msg.get("user", "unknown"),
                     "ts": msg["ts"],
@@ -101,5 +135,5 @@ def fetch_channel_messages(
     except SlackApiError as e:
         print(f"Error fetching messages: {e}")
 
-    print(f"Fetched {len(messages)} messages from channel {channel_id}")
+    print(f"Fetched {len(messages)} messages from channel #{channel_name} ({channel_id})")
     return messages
