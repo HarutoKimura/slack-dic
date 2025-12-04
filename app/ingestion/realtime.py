@@ -6,6 +6,7 @@ from typing import Any
 from slack_sdk import WebClient
 
 from app.ingestion.chunk import chunk_documents
+from app.ingestion.slack_fetch import get_channel_name
 from app.rag.store import VectorStore
 from app.utils.slack_links import get_permalink
 
@@ -55,13 +56,15 @@ def normalize_slack_message(
         logger.warning("Message missing channel or ts: %s", message)
         return None
 
-    # Get permalink
+    # Get permalink and channel name
     permalink = get_permalink(client, channel, ts)
+    channel_name = get_channel_name(client, channel)
 
     # Build document
     doc = {
         "id": f"{channel}-{ts}",
         "channel": channel,
+        "channel_name": channel_name,
         "text": text,
         "user": user,
         "ts": ts,
