@@ -2,11 +2,13 @@
 
 import logging
 import re
+import threading
 
 from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 
-from app.ingestion.realtime import index_slack_message
+from app.ingestion.realtime import index_slack_message, index_documents
+from app.ingestion.slack_fetch import fetch_channel_messages, get_channel_name
 from app.rag.answer import ask
 from app.settings import settings
 
@@ -14,6 +16,18 @@ logger = logging.getLogger(__name__)
 
 # Initialize Slack app
 app = App(token=settings.slack_bot_token)
+
+# Store bot user ID (populated on first use)
+_bot_user_id: str | None = None
+
+
+def get_bot_user_id(client) -> str:
+    """Get the bot's own user ID (cached)."""
+    global _bot_user_id
+    if _bot_user_id is None:
+        response = client.auth_test()
+        _bot_user_id = response["user_id"]
+    return _bot_user_id
 
 
 def is_dm_channel(channel_id: str) -> bool:
@@ -163,6 +177,83 @@ def handle_message(event, client, say):
                 say(text=f"Sorry, I encountered an error: {e}")
             except Exception:
                 pass
+
+
+def _index_channel_background(client, channel_id: str, channel_name: str, limit: int = 1000):
+    """
+    Background task to index a channel's history.
+    Called when bot joins a new channel.
+    """
+    try:
+        logger.info(f"Starting background indexing for #{channel_name} ({channel_id})")
+        print(f"📥 Indexing #{channel_name}...")
+
+        # Fetch channel messages
+        messages = fetch_channel_messages(client, channel_id, limit=limit)
+
+        if not messages:
+            logger.info(f"No messages found in #{channel_name}")
+            client.chat_postMessage(
+                channel=channel_id,
+                text=f"✅ Indexing complete! No messages found to index in this channel."
+            )
+            return
+
+        # Index the messages
+        num_chunks = index_documents(messages)
+
+        logger.info(f"Indexed {num_chunks} chunks from #{channel_name}")
+        print(f"✅ Indexed {num_chunks} chunks from #{channel_name}")
+
+        # Notify channel
+        client.chat_postMessage(
+            channel=channel_id,
+            text=f"✅ Indexing complete! I've indexed {len(messages)} messages ({num_chunks} chunks) from this channel. You can now ask me questions!"
+        )
+
+    except Exception as e:
+        logger.error(f"Error indexing channel {channel_name}: {e}", exc_info=True)
+        try:
+            client.chat_postMessage(
+                channel=channel_id,
+                text=f"❌ Sorry, I encountered an error while indexing: {e}"
+            )
+        except Exception:
+            pass
+
+
+@app.event("member_joined_channel")
+def handle_member_joined(event, client, say):
+    """
+    Handle member_joined_channel event.
+    When the BOT is invited to a new channel, automatically index its history.
+    """
+    user_id = event.get("user")
+    channel_id = event.get("channel")
+
+    # Check if it's the bot that joined
+    bot_id = get_bot_user_id(client)
+    if user_id != bot_id:
+        # Another user joined, not the bot - ignore
+        return
+
+    # Bot was invited to a new channel!
+    channel_name = get_channel_name(client, channel_id)
+    logger.info(f"Bot joined channel #{channel_name} ({channel_id})")
+
+    # Send initial message
+    say(
+        text=f"Thanks for inviting me! 🧠 I'm now indexing the history of this channel so I can answer questions about it. This may take a moment...",
+        channel=channel_id
+    )
+
+    # Run indexing in background thread (non-blocking)
+    thread = threading.Thread(
+        target=_index_channel_background,
+        args=(client, channel_id, channel_name),
+        daemon=True
+    )
+    thread.start()
 
 
 def start_socket_mode():

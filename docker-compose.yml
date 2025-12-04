@@ -1,0 +1,27 @@
+services:
+  slack-rag-bot:
+    build: .
+    container_name: slack-rag-bot
+    restart: unless-stopped
+    environment:
+      # Required - set these in .env file or pass directly
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN}
+      # Supports both SLACK_APP_TOKEN and SOCKET_MODE_TOKEN
+      - SLACK_APP_TOKEN=${SLACK_APP_TOKEN:-${SOCKET_MODE_TOKEN}}
+      # Optional - defaults shown
+      - CHROMA_PERSIST_DIRECTORY=/app/.chroma
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-text-embedding-3-small}
+      - LLM_MODEL=${LLM_MODEL:-gpt-5-mini-2025-08-07}
+      - MIN_SIMILARITY=${MIN_SIMILARITY:-0.25}
+      - REALTIME_INDEX_ENABLED=${REALTIME_INDEX_ENABLED:-true}
+      - STARTUP_INDEX_ENABLED=${STARTUP_INDEX_ENABLED:-true}
+      - STARTUP_INDEX_HOURS=${STARTUP_INDEX_HOURS:-24}
+    volumes:
+      # Persist ChromaDB data
+      - chroma-data:/app/.chroma
+    # No ports needed - Socket Mode uses outbound WebSocket
+
+volumes:
+  chroma-data:
+    driver: local

@@ -2,12 +2,15 @@
 
 A Slack RAG (Retrieval-Augmented Generation) bot that acts as an intelligent knowledge base for your workspace. Ask questions via DM or @mention, and get answers based on your Slack message history.
 
+**Supports both English and Japanese messages.**
+
 ## What It Does
 
 - **Ask via DM**: Send a direct message to the bot → it searches ALL indexed channels → returns an answer with sources
 - **Ask via @mention**: Mention the bot in any channel → get answers from all indexed messages
 - **Auto-indexing**: New messages are automatically indexed in real-time
 - **Startup catch-up**: Missed messages while offline are indexed when the bot starts
+- **Bilingual**: Handles English and Japanese text with smart chunking for both languages
 
 ## Quick Start
 
@@ -94,6 +97,7 @@ Subscribe to these bot events:
 - `message.channels` - Index public channel messages
 - `message.groups` - Index private channel messages
 - `message.im` - Receive DM questions
+- `member_joined_channel` - Auto-index when bot is invited to a channel
 
 #### App Home
 
@@ -223,9 +227,15 @@ Question → Embedding → Vector Search → Top 5 chunks → LLM → Answer
 
 | Trigger | What happens |
 |---------|--------------|
-| Bot starts | Index last 24 hours from all joined channels |
+| Bot starts | Check for unindexed channels, then index last 24 hours |
+| Bot invited to channel | Automatically index channel history in background |
 | New message in channel | Index immediately (real-time) |
 | DM received | Search all indexed channels, return answer |
+
+**No manual indexing required!** Once the bot is set up, it automatically handles:
+- Channels joined while offline (indexed on next startup)
+- New channel invitations (indexed immediately in background)
+- New messages (indexed in real-time)
 
 ## Configuration
 
@@ -284,23 +294,92 @@ rm -rf .chroma/
 python scripts/ingest_all_channels.py --limit 5000
 ```
 
+## Docker Deployment
+
+### Quick Start with Docker
+
+```bash
+# Build and run
+docker compose up -d
+
+# View logs
+docker compose logs -f
+
+# Stop
+docker compose down
+```
+
+Make sure your `.env` file contains:
+```env
+OPENAI_API_KEY=sk-...
+SLACK_BOT_TOKEN=xoxb-...
+SLACK_APP_TOKEN=xapp-...   # or SOCKET_MODE_TOKEN
+```
+
+### Docker Commands
+
+| Command | Description |
+|---------|-------------|
+| `docker compose up -d` | Start bot in background |
+| `docker compose up -d --build` | Rebuild and start |
+| `docker compose logs -f` | Watch logs in real-time |
+| `docker compose ps` | Check container status |
+| `docker compose restart` | Restart the bot |
+| `docker compose down` | Stop the bot |
+| `docker compose down -v` | Stop and delete vector DB data |
+
+### Data Persistence
+
+Vector database is stored in a Docker volume (`chroma-data`). Your indexed messages persist across container restarts.
+
+```bash
+# View volume
+docker volume ls | grep chroma
+
+# Backup volume (optional)
+docker run --rm -v slack-dic_chroma-data:/data -v $(pwd):/backup alpine tar czf /backup/chroma-backup.tar.gz /data
+```
+
 ## Production Deployment
 
 ### Phase 1: Local Testing
-1. Run on your machine
-2. Vector DB stored in `.chroma/` folder
+1. Run on your machine with `python -m app.main` or Docker
+2. Vector DB stored in `.chroma/` folder (local) or Docker volume
 3. Good for validating with real data
 
-### Phase 2: Cloud Deployment
-Options for 24/7 operation:
-- **Server**: AWS EC2, GCP, DigitalOcean
-- **Container**: Docker + any cloud provider
+### Phase 2: Cloud Deployment (AWS EC2)
+
+1. Launch EC2 instance (t3.medium recommended for 10-50 users)
+2. Install Docker:
+   ```bash
+   sudo yum update -y
+   sudo yum install -y docker
+   sudo service docker start
+   sudo usermod -a -G docker ec2-user
+   ```
+3. Copy project files and `.env` to EC2
+4. Run with Docker:
+   ```bash
+   docker compose up -d
+   ```
+
+### Scaling Guide
+
+| Users | EC2 Instance | Notes |
+|-------|--------------|-------|
+| <10 | t3.small | Testing/development |
+| 10-50 | t3.medium | Small team |
+| 50-100 | t3.large | Consider managed vector DB |
+| 100+ | Multiple instances | Use Pinecone + HTTP mode |
+
+### Alternative Deployment Options
+- **Container**: AWS ECS, GCP Cloud Run, DigitalOcean App Platform
 - **PaaS**: Railway, Render, Heroku
 
-Vector DB options for production:
-- **Pinecone**: Managed vector DB (recommended)
+### Vector DB Options for Scale
+- **Self-hosted ChromaDB**: Current setup, good for <100 users
+- **Pinecone**: Managed vector DB (recommended for scale)
 - **Weaviate Cloud**: Alternative managed option
-- **Self-hosted ChromaDB**: On your server
 - **PostgreSQL + pgvector**: If you need SQL
 
 ## Data Storage
@@ -310,6 +389,88 @@ Vector DB options for production:
 | Vector embeddings | `.chroma/` | Local filesystem |
 | Configuration | `.env` | Local file |
 | Slack messages | Slack API | Fetched on-demand |
+
+## Step-by-Step Setup Guide
+
+### Complete Setup Flow
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  1. CREATE SLACK APP                                        │
+│     api.slack.com/apps → Create New App                     │
+│     Add OAuth scopes, Event subscriptions, Enable Socket    │
+│     Mode, Enable Messages Tab in App Home                   │
+└─────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────┐
+│  2. INSTALL APP TO WORKSPACE                                │
+│     Install App → Copy Bot Token & App Token to .env        │
+└─────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────┐
+│  3. JOIN CHANNELS                                           │
+│     python scripts/join_all_channels.py                     │
+│     (Bot must be member of channels to read messages)       │
+└─────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────┐
+│  4. INDEX MESSAGES                                          │
+│     python scripts/ingest_all_channels.py                   │
+│     (Stores messages in vector database)                    │
+└─────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────┐
+│  5. START BOT                                               │
+│     python -m app.main                                      │
+│     (Now ready to answer questions!)                        │
+└─────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────┐
+│  6. ASK QUESTIONS                                           │
+│     • Send DM to bot → searches ALL indexed channels        │
+│     • @mention in channel → answers from all channels       │
+│     • New messages auto-indexed while bot is running        │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Key Points
+
+| Requirement | Why |
+|-------------|-----|
+| Bot must join channel | Slack API requires membership to read messages |
+| Must run indexing script | Messages need to be stored in vector DB before searching |
+| No need to @mention before DM | DM works as soon as messages are indexed |
+
+### Adding a New Channel Later
+
+Simply invite the bot to the channel - it will automatically index the channel history:
+
+```
+/invite @your-bot-name
+```
+
+The bot will:
+1. Send a message: "Thanks for inviting me! I'm now indexing..."
+2. Index all messages in the background
+3. Notify when complete: "Indexing complete! I've indexed X messages"
+
+**No manual scripts needed!** The bot handles everything automatically.
+
+For bulk operations (e.g., joining all public channels at once):
+```bash
+python scripts/join_all_channels.py
+```
+
+## Japanese Language Support
+
+The bot automatically handles Japanese text:
+
+- **Sentence breaks**: `。` `！` `？` (full-width punctuation)
+- **Clause breaks**: `、` (Japanese comma)
+- **List markers**: `・` `①②③` `１.２.３.`
+- **Smart tokenization**: Adjusts for Japanese token density
+
+Works seamlessly with mixed English/Japanese content in the same workspace.
 
 ## License
 

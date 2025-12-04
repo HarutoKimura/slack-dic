@@ -13,7 +13,18 @@ URL_PATTERN = re.compile(
 )
 CODE_BLOCK_PATTERN = re.compile(r'```[\s\S]*?```')  # Fenced code blocks
 INLINE_CODE_PATTERN = re.compile(r'`[^`\n]+`')  # Inline code
-LIST_ITEM_PATTERN = re.compile(r'^[\s]*[-*•]\s+.+$', re.MULTILINE)  # List items
+# List items - supports English and Japanese markers
+LIST_ITEM_PATTERN = re.compile(
+    r'^[\s]*[-*•・‣⁃]\s*.+$|'  # Bullet markers (English + Japanese ・)
+    r'^[\s]*[①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳]\s*.+$|'  # Circled numbers
+    r'^[\s]*[０-９]+[.．、]\s*.+$|'  # Full-width numbered lists (１. ２．)
+    r'^[\s]*[0-9]+[.．、]\s*.+$',  # Half-width numbered lists (1. 2、)
+    re.MULTILINE
+)
+
+# Japanese punctuation for sentence/clause detection
+JAPANESE_SENTENCE_END = '。！？'  # Period, exclamation, question (full-width)
+JAPANESE_CLAUSE_BREAK = '、'  # Comma (読点)
 
 
 def _get_tokenizer():
@@ -136,18 +147,26 @@ def _find_break_point(
         if i < len(text) - 1 and text[i:i+2] == '\n\n':
             priority = 1
             break_pos = i + 2
-        # Priority 2: Sentence end followed by space or newline
+        # Priority 2: English sentence end followed by space or newline
         elif i > 0 and text[i-1] in '.!?' and text[i] in ' \n':
             priority = 2
             break_pos = i + 1
+        # Priority 2b: Japanese sentence end (。！？) - no space needed after
+        elif i > 0 and text[i-1] in JAPANESE_SENTENCE_END:
+            priority = 2
+            break_pos = i
         # Priority 3: Newline
         elif text[i] == '\n':
             priority = 3
             break_pos = i + 1
-        # Priority 4: Space (word boundary)
+        # Priority 4: Space (word boundary for English)
         elif text[i] == ' ':
             priority = 4
             break_pos = i + 1
+        # Priority 5: Japanese clause break (、読点) - natural pause point
+        elif i > 0 and text[i-1] in JAPANESE_CLAUSE_BREAK:
+            priority = 5
+            break_pos = i
 
         if priority is not None and break_pos is not None:
             # Make sure break_pos is not inside protected content
@@ -306,9 +325,20 @@ def chunk_text(
 
         if chunk:
             # Token-based validation
+            # Japanese text uses ~1-2 tokens per character vs ~0.25 for English
+            # We use a higher ratio (1.2) to accommodate both languages
             if use_tokens and tokenizer:
                 token_count = _count_tokens(chunk, tokenizer)
-                max_tokens = int(chunk_size * 0.35)
+                # Detect if chunk contains significant Japanese text
+                japanese_chars = sum(1 for c in chunk if '\u3000' <= c <= '\u9fff' or '\uff00' <= c <= '\uffef')
+                is_japanese_heavy = japanese_chars > len(chunk) * 0.3
+
+                # Use different token limits for Japanese vs English
+                if is_japanese_heavy:
+                    max_tokens = int(chunk_size * 1.2)  # Japanese: ~1.2 tokens per char
+                else:
+                    max_tokens = int(chunk_size * 0.35)  # English: ~0.25 tokens per char
+
                 if token_count > max_tokens and end - start > 200:
                     reduced_end = _find_break_point(
                         text, start, start + int(chunk_size * 0.7), protected_ranges
