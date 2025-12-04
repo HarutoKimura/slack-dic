@@ -2,12 +2,15 @@
 
 A Slack RAG (Retrieval-Augmented Generation) bot that acts as an intelligent knowledge base for your workspace. Ask questions via DM or @mention, and get answers based on your Slack message history.
 
+**Supports both English and Japanese messages.**
+
 ## What It Does
 
 - **Ask via DM**: Send a direct message to the bot → it searches ALL indexed channels → returns an answer with sources
 - **Ask via @mention**: Mention the bot in any channel → get answers from all indexed messages
 - **Auto-indexing**: New messages are automatically indexed in real-time
 - **Startup catch-up**: Missed messages while offline are indexed when the bot starts
+- **Bilingual**: Handles English and Japanese text with smart chunking for both languages
 
 ## Quick Start
 
@@ -310,6 +313,84 @@ Vector DB options for production:
 | Vector embeddings | `.chroma/` | Local filesystem |
 | Configuration | `.env` | Local file |
 | Slack messages | Slack API | Fetched on-demand |
+
+## Step-by-Step Setup Guide
+
+### Complete Setup Flow
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  1. CREATE SLACK APP                                        │
+│     api.slack.com/apps → Create New App                     │
+│     Add OAuth scopes, Event subscriptions, Enable Socket    │
+│     Mode, Enable Messages Tab in App Home                   │
+└─────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────┐
+│  2. INSTALL APP TO WORKSPACE                                │
+│     Install App → Copy Bot Token & App Token to .env        │
+└─────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────┐
+│  3. JOIN CHANNELS                                           │
+│     python scripts/join_all_channels.py                     │
+│     (Bot must be member of channels to read messages)       │
+└─────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────┐
+│  4. INDEX MESSAGES                                          │
+│     python scripts/ingest_all_channels.py                   │
+│     (Stores messages in vector database)                    │
+└─────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────┐
+│  5. START BOT                                               │
+│     python -m app.main                                      │
+│     (Now ready to answer questions!)                        │
+└─────────────────────────────────────────────────────────────┘
+                              ↓
+┌─────────────────────────────────────────────────────────────┐
+│  6. ASK QUESTIONS                                           │
+│     • Send DM to bot → searches ALL indexed channels        │
+│     • @mention in channel → answers from all channels       │
+│     • New messages auto-indexed while bot is running        │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Key Points
+
+| Requirement | Why |
+|-------------|-----|
+| Bot must join channel | Slack API requires membership to read messages |
+| Must run indexing script | Messages need to be stored in vector DB before searching |
+| No need to @mention before DM | DM works as soon as messages are indexed |
+
+### Adding a New Channel Later
+
+```bash
+# Option 1: In Slack
+/invite @your-bot-name
+
+# Option 2: Join all unjoined channels
+python scripts/join_all_channels.py
+
+# Then index the new channel
+python scripts/ingest_slack.py --channel "new-channel-name"
+
+# Or re-index all channels
+python scripts/ingest_all_channels.py
+```
+
+## Japanese Language Support
+
+The bot automatically handles Japanese text:
+
+- **Sentence breaks**: `。` `！` `？` (full-width punctuation)
+- **Clause breaks**: `、` (Japanese comma)
+- **List markers**: `・` `①②③` `１.２.３.`
+- **Smart tokenization**: Adjusts for Japanese token density
+
+Works seamlessly with mixed English/Japanese content in the same workspace.
 
 ## License
 
