@@ -97,6 +97,7 @@ Subscribe to these bot events:
 - `message.channels` - Index public channel messages
 - `message.groups` - Index private channel messages
 - `message.im` - Receive DM questions
+- `member_joined_channel` - Auto-index when bot is invited to a channel
 
 #### App Home
 
@@ -226,9 +227,15 @@ Question → Embedding → Vector Search → Top 5 chunks → LLM → Answer
 
 | Trigger | What happens |
 |---------|--------------|
-| Bot starts | Index last 24 hours from all joined channels |
+| Bot starts | Check for unindexed channels, then index last 24 hours |
+| Bot invited to channel | Automatically index channel history in background |
 | New message in channel | Index immediately (real-time) |
 | DM received | Search all indexed channels, return answer |
+
+**No manual indexing required!** Once the bot is set up, it automatically handles:
+- Channels joined while offline (indexed on next startup)
+- New channel invitations (indexed immediately in background)
+- New messages (indexed in real-time)
 
 ## Configuration
 
@@ -367,18 +374,22 @@ Vector DB options for production:
 
 ### Adding a New Channel Later
 
-```bash
-# Option 1: In Slack
+Simply invite the bot to the channel - it will automatically index the channel history:
+
+```
 /invite @your-bot-name
+```
 
-# Option 2: Join all unjoined channels
+The bot will:
+1. Send a message: "Thanks for inviting me! I'm now indexing..."
+2. Index all messages in the background
+3. Notify when complete: "Indexing complete! I've indexed X messages"
+
+**No manual scripts needed!** The bot handles everything automatically.
+
+For bulk operations (e.g., joining all public channels at once):
+```bash
 python scripts/join_all_channels.py
-
-# Then index the new channel
-python scripts/ingest_slack.py --channel "new-channel-name"
-
-# Or re-index all channels
-python scripts/ingest_all_channels.py
 ```
 
 ## Japanese Language Support

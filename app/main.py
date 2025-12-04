@@ -16,9 +16,15 @@ def main():
     if settings.get_socket_mode_token():
         # Run startup catch-up indexing before starting the bot
         if settings.startup_index_enabled:
-            from app.ingestion.startup import startup_index
+            from app.ingestion.startup import startup_index, check_and_index_new_channels
 
             client = WebClient(token=settings.slack_bot_token)
+
+            # First, check for any channels that were joined while bot was offline
+            # and haven't been indexed yet
+            check_and_index_new_channels(client)
+
+            # Then, catch up on recent messages from all channels
             startup_index(client, hours=settings.startup_index_hours)
 
         # Start Socket Mode
