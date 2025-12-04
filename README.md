@@ -294,23 +294,92 @@ rm -rf .chroma/
 python scripts/ingest_all_channels.py --limit 5000
 ```
 
+## Docker Deployment
+
+### Quick Start with Docker
+
+```bash
+# Build and run
+docker compose up -d
+
+# View logs
+docker compose logs -f
+
+# Stop
+docker compose down
+```
+
+Make sure your `.env` file contains:
+```env
+OPENAI_API_KEY=sk-...
+SLACK_BOT_TOKEN=xoxb-...
+SLACK_APP_TOKEN=xapp-...   # or SOCKET_MODE_TOKEN
+```
+
+### Docker Commands
+
+| Command | Description |
+|---------|-------------|
+| `docker compose up -d` | Start bot in background |
+| `docker compose up -d --build` | Rebuild and start |
+| `docker compose logs -f` | Watch logs in real-time |
+| `docker compose ps` | Check container status |
+| `docker compose restart` | Restart the bot |
+| `docker compose down` | Stop the bot |
+| `docker compose down -v` | Stop and delete vector DB data |
+
+### Data Persistence
+
+Vector database is stored in a Docker volume (`chroma-data`). Your indexed messages persist across container restarts.
+
+```bash
+# View volume
+docker volume ls | grep chroma
+
+# Backup volume (optional)
+docker run --rm -v slack-dic_chroma-data:/data -v $(pwd):/backup alpine tar czf /backup/chroma-backup.tar.gz /data
+```
+
 ## Production Deployment
 
 ### Phase 1: Local Testing
-1. Run on your machine
-2. Vector DB stored in `.chroma/` folder
+1. Run on your machine with `python -m app.main` or Docker
+2. Vector DB stored in `.chroma/` folder (local) or Docker volume
 3. Good for validating with real data
 
-### Phase 2: Cloud Deployment
-Options for 24/7 operation:
-- **Server**: AWS EC2, GCP, DigitalOcean
-- **Container**: Docker + any cloud provider
+### Phase 2: Cloud Deployment (AWS EC2)
+
+1. Launch EC2 instance (t3.medium recommended for 10-50 users)
+2. Install Docker:
+   ```bash
+   sudo yum update -y
+   sudo yum install -y docker
+   sudo service docker start
+   sudo usermod -a -G docker ec2-user
+   ```
+3. Copy project files and `.env` to EC2
+4. Run with Docker:
+   ```bash
+   docker compose up -d
+   ```
+
+### Scaling Guide
+
+| Users | EC2 Instance | Notes |
+|-------|--------------|-------|
+| <10 | t3.small | Testing/development |
+| 10-50 | t3.medium | Small team |
+| 50-100 | t3.large | Consider managed vector DB |
+| 100+ | Multiple instances | Use Pinecone + HTTP mode |
+
+### Alternative Deployment Options
+- **Container**: AWS ECS, GCP Cloud Run, DigitalOcean App Platform
 - **PaaS**: Railway, Render, Heroku
 
-Vector DB options for production:
-- **Pinecone**: Managed vector DB (recommended)
+### Vector DB Options for Scale
+- **Self-hosted ChromaDB**: Current setup, good for <100 users
+- **Pinecone**: Managed vector DB (recommended for scale)
 - **Weaviate Cloud**: Alternative managed option
-- **Self-hosted ChromaDB**: On your server
 - **PostgreSQL + pgvector**: If you need SQL
 
 ## Data Storage
