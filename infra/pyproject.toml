@@ -1,0 +1,13 @@
+[project]
+name = "slack-rag-infra"
+version = "0.1.0"
+description = "AWS CDK infrastructure for Slack RAG Bot"
+requires-python = ">=3.11"
+dependencies = [
+    "aws-cdk-lib>=2.170.0",
+    "constructs>=10.0.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
