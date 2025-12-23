@@ -325,3 +325,138 @@ LIMIT 5;
 | `SLACK_BOT_TOKEN_PARAM` | CDK | SSM parameter name |
 | `SLACK_SIGNING_SECRET_PARAM` | CDK | SSM parameter name |
 | `ALLOWED_CHANNELS` | CDK (optional) | Channel filter (comma-separated) |
+
+## Testing
+
+```bash
+# Run all tests (requires PostgreSQL)
+python -m pytest tests/ -v
+
+# Run only unit tests (no PostgreSQL needed)
+python -m pytest tests/unit/test_slack_auth.py tests/unit/test_chunking.py tests/unit/test_handlers.py -v
+
+# Check database connection
+USE_DATA_API=false python -c "
+from app.core.database import MessageRepository
+r = MessageRepository()
+r.init_schema()
+print(f'Database ready! Count: {r.count()}')
+"
+```
+
+### Test Coverage
+
+| Test File | Tests | Coverage |
+|-----------|-------|----------|
+| `test_repository.py` | Database CRUD, vector search, similarity thresholds |
+| `test_slack_auth.py` | Signature verification, replay attack prevention |
+| `test_chunking.py` | Text splitting, Japanese support, URL preservation |
+| `test_handlers.py` | Message parsing, bot filtering, event structure |
+
+## Cost Estimate
+
+### Monthly (~$45)
+
+| Service | Usage | Cost |
+|---------|-------|------|
+| Aurora Serverless v2 | 0.5 ACU min | ~$40 |
+| Lambda | ~1000 invocations | ~$0.50 |
+| API Gateway | ~500 requests | ~$0.50 |
+| SQS | ~1000 messages | ~$0.01 |
+| Bedrock Titan | ~300K tokens | ~$0.03 |
+| Bedrock Claude | ~150K tokens | ~$0.20 |
+| CloudWatch | Logs | ~$3 |
+| **Total** | | **~$45/month** |
+
+### Cost Savings (Data API Architecture)
+
+| What We Avoided | Saved |
+|-----------------|-------|
+| NAT Gateway | ~$30/month |
+| VPC Endpoints | ~$15/month |
+| RDS Proxy | ~$15/month |
+| **Total Savings** | **~$60/month** |
+
+## Troubleshooting
+
+### Check CloudWatch Logs
+
+```bash
+# Receiver Lambda
+aws logs tail /aws/lambda/slack-rag-receiver --follow
+
+# QA Processor Lambda
+aws logs tail /aws/lambda/slack-rag-qa-processor --follow
+
+# Batch Indexer Lambda
+aws logs tail /aws/lambda/slack-rag-batch-indexer --follow
+```
+
+### Check Dead Letter Queue
+
+```bash
+aws sqs get-queue-attributes \
+  --queue-url "$(aws sqs get-queue-url --queue-name slack-rag-dlq --query 'QueueUrl' --output text)" \
+  --attribute-names ApproximateNumberOfMessages
+```
+
+### Common Issues
+
+| Issue | Solution |
+|-------|----------|
+| Slack webhook not responding | Check Receiver Lambda logs, verify signing secret |
+| Bot doesn't respond | Check QA Processor logs, verify bot token |
+| No search results | Run batch indexer manually, check indexed message count |
+| Low quality answers | Increase `top_k`, lower `min_similarity` threshold |
+
+### Check Indexed Document Count
+
+```bash
+# Local
+python -c "from app.core.database import MessageRepository; print(MessageRepository().count())"
+
+# AWS (via Lambda)
+aws lambda invoke \
+  --function-name slack-rag-batch-indexer \
+  --payload '{}' \
+  response.json
+```
+
+## Japanese Language Support
+
+The bot automatically handles Japanese text:
+
+- **Sentence breaks**: `。` `！` `？` (full-width punctuation)
+- **Clause breaks**: `、` (Japanese comma)
+- **List markers**: `・` `①②③` `１.２.３.`
+- **Smart tokenization**: Adjusts for Japanese token density
+
+Works seamlessly with mixed English/Japanese content.
+
+## Development
+
+### Adding New Features
+
+1. Create feature in `app/core/` for business logic
+2. Update handlers in `app/handlers/` if Lambda interface changes
+3. Update CDK stacks in `infra/stacks/` for infrastructure changes
+4. Add tests in `tests/unit/`
+
+### Code Style
+
+```bash
+# Format code
+ruff format .
+
+# Lint
+ruff check .
+```
+
+## Documentation
+
+- [Implementation Summary](docs/implementation_summary.md) - Technical details and deployment guide
+- [Migration Plan](docs/serverless_migration_plan.md) - Architecture decisions and migration strategy
+
+## License
+
+MIT
