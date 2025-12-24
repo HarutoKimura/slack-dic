@@ -10,13 +10,10 @@ dependencies = [
     "pydantic-settings>=2.12.0",
     "python-dotenv>=1.2.1",
     "tiktoken>=0.12.0",
-
     # Slack
     "slack-sdk>=3.33.0",
-
     # AWS
     "boto3>=1.35.0",
-
     # Database (local development with PostgreSQL)
     "psycopg2-binary>=2.9.9",
 ]

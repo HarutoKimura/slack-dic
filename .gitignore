@@ -47,5 +47,8 @@ Thumbs.db
 # Logs
 *.log
 
+# CDK output
+infra/cdk.out/
+
 docs/
 tests/

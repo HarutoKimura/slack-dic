@@ -61,7 +61,7 @@ class DatabaseStack(Stack):
             self,
             "SlackRagCluster",
             engine=rds.DatabaseClusterEngine.aurora_postgres(
-                version=rds.AuroraPostgresEngineVersion.VER_15_4,
+                version=rds.AuroraPostgresEngineVersion.VER_15_6,
             ),
             serverless_v2_min_capacity=0.5,  # Minimum ACU (~$0.06/hr when active)
             serverless_v2_max_capacity=2,  # Maximum ACU for scaling

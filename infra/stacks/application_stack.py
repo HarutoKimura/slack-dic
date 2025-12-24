@@ -9,7 +9,9 @@ from aws_cdk import (
     Stack,
     Duration,
     CfnOutput,
+    BundlingOptions,
     aws_lambda as lambda_,
+    aws_lambda_event_sources as lambda_event_sources,
     aws_apigatewayv2 as apigwv2,
     aws_apigatewayv2_integrations as apigwv2_integrations,
     aws_sqs as sqs,
@@ -35,6 +37,22 @@ class ApplicationStack(Stack):
         **kwargs,
     ) -> None:
         super().__init__(scope, id, **kwargs)
+
+        asset_excludes = [
+            ".venv",
+            "__pycache__",
+            "*.pyc",
+            ".git",
+            ".chroma",
+            "infra",
+            "tests",
+            "docs",
+            "scripts",
+            "*.md",
+            ".env",
+            ".env.*",
+            "docker-compose.yml",
+        ]
 
         # =======================================================
         # SSM Parameters for Slack secrets
@@ -123,8 +141,22 @@ class ApplicationStack(Stack):
         # =======================================================
         # Lambda Layer for shared dependencies
         # =======================================================
-        # Note: In production, you'd build this layer with dependencies
-        # For now, we use inline bundling
+        # Bundle dependencies into the Lambda asset (no separate layer).
+        bundling = BundlingOptions(
+            image=lambda_.Runtime.PYTHON_3_12.bundling_image,
+            command=[
+                "bash",
+                "-c",
+                "pip install -r requirements.lambda.txt -t /asset-output "
+                "&& cp -au app /asset-output/app",
+            ],
+            platform="linux/arm64",
+        )
+        lambda_code = lambda_.Code.from_asset(
+            "../",
+            bundling=bundling,
+            exclude=asset_excludes,
+        )
 
         # =======================================================
         # Lambda 1: Receiver (Webhook handler)
@@ -134,21 +166,9 @@ class ApplicationStack(Stack):
             "ReceiverLambda",
             function_name="slack-rag-receiver",
             runtime=lambda_.Runtime.PYTHON_3_12,
+            architecture=lambda_.Architecture.ARM_64,
             handler="app.handlers.receiver.handler",
-            code=lambda_.Code.from_asset(
-                "../",  # Project root
-                exclude=[
-                    ".venv",
-                    "__pycache__",
-                    "*.pyc",
-                    ".git",
-                    ".chroma",
-                    "infra",
-                    "tests",
-                    "docs",
-                    "*.md",
-                ],
-            ),
+            code=lambda_code,
             timeout=Duration.seconds(10),  # Slack requires response within 3s, but we use async
             memory_size=256,
             environment={
@@ -175,21 +195,9 @@ class ApplicationStack(Stack):
             "QAProcessorLambda",
             function_name="slack-rag-qa-processor",
             runtime=lambda_.Runtime.PYTHON_3_12,
+            architecture=lambda_.Architecture.ARM_64,
             handler="app.handlers.qa_processor.handler",
-            code=lambda_.Code.from_asset(
-                "../",
-                exclude=[
-                    ".venv",
-                    "__pycache__",
-                    "*.pyc",
-                    ".git",
-                    ".chroma",
-                    "infra",
-                    "tests",
-                    "docs",
-                    "*.md",
-                ],
-            ),
+            code=lambda_code,
             timeout=Duration.seconds(90),  # RAG can take time
             memory_size=512,
             environment=common_env,
@@ -209,17 +217,9 @@ class ApplicationStack(Stack):
 
         # SQS trigger
         qa_processor_lambda.add_event_source(
-            lambda_.EventSourceMapping(
-                self,
-                "QAQueueTrigger",
-                target=qa_processor_lambda,
-                event_source_arn=qa_queue.queue_arn,
-                batch_size=1,  # Process one question at a time
-            ).node.default_child
-            if False
-            else lambda_.SqsEventSource(
+            lambda_event_sources.SqsEventSource(
                 qa_queue,
-                batch_size=1,
+                batch_size=1,  # Process one question at a time
             )
         )
 
@@ -231,21 +231,9 @@ class ApplicationStack(Stack):
             "BatchIndexerLambda",
             function_name="slack-rag-batch-indexer",
             runtime=lambda_.Runtime.PYTHON_3_12,
+            architecture=lambda_.Architecture.ARM_64,
             handler="app.handlers.batch_indexer.handler",
-            code=lambda_.Code.from_asset(
-                "../",
-                exclude=[
-                    ".venv",
-                    "__pycache__",
-                    "*.pyc",
-                    ".git",
-                    ".chroma",
-                    "infra",
-                    "tests",
-                    "docs",
-                    "*.md",
-                ],
-            ),
+            code=lambda_code,
             timeout=Duration.seconds(300),  # 5 minutes for batch processing
             memory_size=1024,
             environment={

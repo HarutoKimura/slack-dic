@@ -12,7 +12,7 @@ Triggered by: EventBridge (hourly schedule)
 
 import logging
 import os
-from datetime import datetime, timedelta
+from datetime import datetime
 
 from app.core.bedrock import BedrockEmbeddings
 from app.core.database import MessageRepository, MessageChunk
@@ -23,8 +23,9 @@ logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
 
 # Configuration
-LOOKBACK_HOURS = 1
-LOOKBACK_BUFFER_MINUTES = 5  # Extra buffer to catch edge cases
+DEFAULT_LOOKBACK_HOURS = int(os.environ.get("LOOKBACK_HOURS", "1"))
+LOOKBACK_BUFFER_MINUTES = int(os.environ.get("LOOKBACK_BUFFER_MINUTES", "5"))
+FULL_BACKFILL = os.environ.get("FULL_BACKFILL", "false").lower() == "true"
 MIN_MESSAGE_LENGTH = 10  # Skip very short messages
 BATCH_SIZE = 25  # Embedding batch size
 
@@ -67,13 +68,14 @@ def handler(event: dict, context) -> dict:
         Status dict with indexing metrics
     """
     logger.info("Starting batch indexer")
+    if FULL_BACKFILL:
+        logger.warning("FULL_BACKFILL enabled: indexing full channel history")
 
     # Calculate time range
     now = datetime.utcnow()
-    oldest = (now - timedelta(hours=LOOKBACK_HOURS, minutes=LOOKBACK_BUFFER_MINUTES)).timestamp()
     latest = now.timestamp()
 
-    logger.info(f"Fetching messages from {oldest} to {latest}")
+    logger.info(f"Fetching messages up to {latest}")
 
     # Get all channels the bot is in
     channels = get_joined_channels()
@@ -92,6 +94,14 @@ def handler(event: dict, context) -> dict:
     for channel in channels:
         channel_id = channel["id"]
         channel_name = channel["name"]
+        oldest = calculate_oldest_timestamp(
+            channel_id=channel_id,
+            repository=repository,
+            latest=latest,
+        )
+        logger.info(
+            f"Indexing #{channel_name} from {oldest} to {latest}"
+        )
 
         try:
             indexed, skipped = index_channel(
@@ -153,6 +163,33 @@ def get_joined_channels() -> list[dict]:
     return channels
 
 
+def calculate_oldest_timestamp(
+    channel_id: str,
+    repository: MessageRepository,
+    latest: float,
+) -> float:
+    """
+    Calculate the oldest timestamp to fetch for a channel.
+
+    If the channel has indexed data, continue from the latest timestamp.
+    Otherwise, backfill using the configured lookback window or full history.
+    """
+    if FULL_BACKFILL:
+        return 0.0
+
+    last_ts = repository.get_latest_timestamp(channel_id)
+    if last_ts:
+        try:
+            return max(float(last_ts) - LOOKBACK_BUFFER_MINUTES * 60, 0.0)
+        except ValueError:
+            logger.warning(f"Invalid last_ts for channel {channel_id}: {last_ts}")
+
+    return max(
+        latest - (DEFAULT_LOOKBACK_HOURS * 3600) - (LOOKBACK_BUFFER_MINUTES * 60),
+        0.0,
+    )
+
+
 def fetch_channel_messages(
     channel_id: str,
     oldest: float,
@@ -174,13 +211,17 @@ def fetch_channel_messages(
     cursor = None
 
     while True:
-        response = client.conversations_history(
-            channel=channel_id,
-            oldest=str(oldest),
-            latest=str(latest),
-            cursor=cursor,
-            limit=200,
-        )
+        params = {
+            "channel": channel_id,
+            "latest": f"{latest:.6f}",
+            "limit": 200,
+        }
+        if cursor:
+            params["cursor"] = cursor
+        if oldest > 0:
+            params["oldest"] = f"{oldest:.6f}"
+
+        response = client.conversations_history(**params)
 
         messages.extend(response.get("messages", []))
 
