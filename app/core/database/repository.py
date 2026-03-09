@@ -153,7 +153,7 @@ class MessageRepository:
     def search_similar(
         self,
         embedding: list[float],
-        top_k: int = 5,
+        top_k: int = 20,
         min_similarity: float = 0.25,
         channel_filter: Optional[str] = None,
     ) -> list[SearchResult]:
@@ -177,6 +177,7 @@ class MessageRepository:
                     id,
                     channel_name,
                     text,
+                    message_ts,
                     permalink,
                     user_name,
                     1 - (embedding <=> :embedding::vector) AS similarity
@@ -198,6 +199,7 @@ class MessageRepository:
                     id,
                     channel_name,
                     text,
+                    message_ts,
                     permalink,
                     user_name,
                     1 - (embedding <=> :embedding::vector) AS similarity
@@ -219,6 +221,7 @@ class MessageRepository:
                 id=row["id"],
                 channel_name=row.get("channel_name"),
                 text=row["text"],
+                message_ts=row.get("message_ts"),
                 permalink=row.get("permalink"),
                 user_name=row.get("user_name"),
                 similarity=float(row["similarity"]),
@@ -238,6 +241,20 @@ class MessageRepository:
             {"channel_id": channel_id},
         )
         return result[0]["count"] if result else 0
+
+    def message_exists(self, channel_id: str, message_ts: str) -> bool:
+        """Check whether any chunk for a message already exists."""
+        result = self._conn.execute(
+            """
+            SELECT 1
+            FROM slack_messages
+            WHERE channel_id = :channel_id
+              AND message_ts = :message_ts
+            LIMIT 1
+            """,
+            {"channel_id": channel_id, "message_ts": message_ts},
+        )
+        return len(result) > 0
 
     def get_latest_timestamp(self, channel_id: str) -> Optional[str]:
         """Get the latest indexed message timestamp for a channel."""

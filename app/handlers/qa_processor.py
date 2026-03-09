@@ -22,6 +22,7 @@ from app.core.slack.client import get_slack_client
 
 logger = logging.getLogger()
 logger.setLevel(os.environ.get("LOG_LEVEL", "INFO"))
+CURRENT_TIME = "2026-02-12"
 
 # Initialize clients (reused across invocations for warm starts)
 _embeddings = None
@@ -110,9 +111,10 @@ def process_record(record: dict) -> None:
             repository=get_repository(),
             embeddings=get_embeddings(),
             llm=get_llm(),
-            top_k=5,
+            top_k=25,
             min_similarity=0.25,
             include_sources=True,
+            current_time=CURRENT_TIME,
         )
 
         logger.info(f"Generated answer ({len(answer)} chars) from {len(results)} sources")

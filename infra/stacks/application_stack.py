@@ -134,7 +134,7 @@ class ApplicationStack(Stack):
             actions=["bedrock:InvokeModel"],
             resources=[
                 f"arn:aws:bedrock:{self.region}::foundation-model/amazon.titan-embed-text-v1",
-                f"arn:aws:bedrock:{self.region}::foundation-model/anthropic.claude-3-haiku-20240307-v1:0",
+                f"arn:aws:bedrock:{self.region}::foundation-model/anthropic.claude-3-5-sonnet-20240620-v1:0",
             ],
         )
 

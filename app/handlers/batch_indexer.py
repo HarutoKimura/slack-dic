@@ -12,6 +12,7 @@ Triggered by: EventBridge (hourly schedule)
 
 import logging
 import os
+import time
 from datetime import datetime
 
 from app.core.bedrock import BedrockEmbeddings
@@ -28,6 +29,22 @@ LOOKBACK_BUFFER_MINUTES = int(os.environ.get("LOOKBACK_BUFFER_MINUTES", "5"))
 FULL_BACKFILL = os.environ.get("FULL_BACKFILL", "false").lower() == "true"
 MIN_MESSAGE_LENGTH = 10  # Skip very short messages
 BATCH_SIZE = 25  # Embedding batch size
+NOISE_SUBTYPES = {
+    "channel_join",
+    "channel_leave",
+    "channel_topic",
+    "channel_purpose",
+    "channel_name",
+    "channel_archive",
+    "channel_unarchive",
+    "group_join",
+    "group_leave",
+    "group_topic",
+    "group_purpose",
+    "group_name",
+    "group_archive",
+    "group_unarchive",
+}
 
 # Channels to index (comma-separated IDs, empty = all joined channels)
 ALLOWED_CHANNELS = set(
@@ -61,7 +78,7 @@ def handler(event: dict, context) -> dict:
     Lambda handler for batch indexing.
 
     Args:
-        event: EventBridge event (unused)
+        event: EventBridge event (supports optional "days" override)
         context: Lambda context
 
     Returns:
@@ -74,6 +91,24 @@ def handler(event: dict, context) -> dict:
     # Calculate time range
     now = datetime.utcnow()
     latest = now.timestamp()
+    days = event.get("days") if isinstance(event, dict) else None
+    manual_backfill = days is not None
+    oldest_override = None
+
+    if days is not None:
+        try:
+            days_value = float(days)
+            if days_value < 0:
+                raise ValueError("days must be non-negative")
+            oldest_override = max(latest - (days_value * 24 * 3600), 0.0)
+            logger.info(
+                f"Using event days override: days={days_value}, oldest={oldest_override}"
+            )
+        except (TypeError, ValueError):
+            logger.warning(
+                f"Invalid 'days' value in event: {days!r}. "
+                "Falling back to default lookback logic."
+            )
 
     logger.info(f"Fetching messages up to {latest}")
 
@@ -94,11 +129,14 @@ def handler(event: dict, context) -> dict:
     for channel in channels:
         channel_id = channel["id"]
         channel_name = channel["name"]
-        oldest = calculate_oldest_timestamp(
-            channel_id=channel_id,
-            repository=repository,
-            latest=latest,
-        )
+        if oldest_override is not None:
+            oldest = oldest_override
+        else:
+            oldest = calculate_oldest_timestamp(
+                channel_id=channel_id,
+                repository=repository,
+                latest=latest,
+            )
         logger.info(
             f"Indexing #{channel_name} from {oldest} to {latest}"
         )
@@ -111,6 +149,7 @@ def handler(event: dict, context) -> dict:
                 latest=latest,
                 embeddings=embeddings,
                 repository=repository,
+                stop_on_existing=not manual_backfill,
             )
             total_indexed += indexed
             total_skipped += skipped
@@ -239,6 +278,7 @@ def index_channel(
     latest: float,
     embeddings: BedrockEmbeddings,
     repository: MessageRepository,
+    stop_on_existing: bool = True,
 ) -> tuple[int, int]:
     """
     Index messages from a single channel.
@@ -250,87 +290,156 @@ def index_channel(
         latest: Latest timestamp
         embeddings: Embeddings client
         repository: Message repository
+        stop_on_existing: Stop scanning after first existing message (incremental mode)
 
     Returns:
         Tuple of (indexed_count, skipped_count)
     """
-    # Fetch messages
-    messages = fetch_channel_messages(channel_id, oldest, latest)
-    logger.debug(f"Fetched {len(messages)} messages from #{channel_name}")
+    client = get_slack_client()
+    cursor = None
+    total_indexed = 0
+    total_skipped = 0
 
-    if not messages:
-        return (0, 0)
+    while True:
+        params = {
+            "channel": channel_id,
+            "latest": f"{latest:.6f}",
+            "limit": 200,
+        }
+        if cursor:
+            params["cursor"] = cursor
+        if oldest > 0:
+            params["oldest"] = f"{oldest:.6f}"
 
-    # Prepare chunks for indexing
-    chunks_to_index = []
-    skipped = 0
-
-    for msg in messages:
-        # Skip bot messages
-        if msg.get("bot_id") or msg.get("subtype"):
-            skipped += 1
-            continue
-
-        text = msg.get("text", "")
-        if not text or len(text) < MIN_MESSAGE_LENGTH:
-            skipped += 1
-            continue
-
-        ts = msg.get("ts")
-        user_id = msg.get("user")
-
-        # Get user name (cached)
-        user_name = get_user_name(user_id) if user_id else None
-
-        # Get permalink
-        permalink = get_permalink(channel_id, ts)
-
-        # Chunk the message
-        text_chunks = chunk_text(text, chunk_size=500)
-
-        for idx, chunk_text_content in enumerate(text_chunks):
-            chunk_id = f"{channel_id}_{ts}_{idx}"
-
-            chunks_to_index.append({
-                "id": chunk_id,
-                "channel_id": channel_id,
-                "channel_name": channel_name,
-                "message_ts": ts,
-                "chunk_index": idx,
-                "text": chunk_text_content,
-                "user_id": user_id or "",
-                "user_name": user_name or "",
-                "permalink": permalink or "",
-            })
-
-    if not chunks_to_index:
-        return (0, skipped)
-
-    # Generate embeddings in batches
-    logger.debug(f"Generating embeddings for {len(chunks_to_index)} chunks")
-    texts = [c["text"] for c in chunks_to_index]
-    chunk_embeddings = embeddings.embed_batch(texts, batch_size=BATCH_SIZE)
-
-    # Convert to MessageChunk models
-    message_chunks = []
-    for chunk_data, embedding in zip(chunks_to_index, chunk_embeddings):
-        message_chunks.append(
-            MessageChunk(
-                id=chunk_data["id"],
-                channel_id=chunk_data["channel_id"],
-                channel_name=chunk_data["channel_name"],
-                message_ts=chunk_data["message_ts"],
-                chunk_index=chunk_data["chunk_index"],
-                text=chunk_data["text"],
-                embedding=embedding,
-                user_id=chunk_data["user_id"],
-                user_name=chunk_data["user_name"],
-                permalink=chunk_data["permalink"],
-            )
+        response = client.conversations_history(**params)
+        messages = response.get("messages", [])
+        logger.debug(
+            "Fetched %s messages from #%s (cursor=%s)",
+            len(messages),
+            channel_name,
+            "set" if cursor else "none",
         )
 
-    # Bulk insert
-    indexed = repository.upsert_chunks(message_chunks)
-    logger.info(f"Indexed {indexed} chunks from #{channel_name}")
+        if not messages:
+            break
 
-    return (indexed, skipped)
+        chunks_to_index = []
+        reached_oldest = False
+        stop_scan = False
+
+        for msg in messages:
+            ts = msg.get("ts")
+            if oldest > 0 and ts:
+                try:
+                    if float(ts) <= oldest:
+                        reached_oldest = True
+                except ValueError:
+                    logger.debug(
+                        "Skipping oldest boundary check for invalid ts=%s in #%s",
+                        ts,
+                        channel_name,
+                    )
+
+            # Skip bot messages
+            if msg.get("bot_id"):
+                total_skipped += 1
+                continue
+
+            subtype = msg.get("subtype")
+            if subtype in NOISE_SUBTYPES:
+                total_skipped += 1
+                continue
+
+            text = msg.get("text", "")
+            if not text or len(text) < MIN_MESSAGE_LENGTH:
+                total_skipped += 1
+                continue
+
+            user_id = msg.get("user")
+            if not ts:
+                total_skipped += 1
+                continue
+
+            if repository.message_exists(channel_id=channel_id, message_ts=ts):
+                total_skipped += 1
+                if stop_on_existing:
+                    logger.info(
+                        "Found already indexed message in #%s (ts=%s), stopping incremental scan",
+                        channel_name,
+                        ts,
+                    )
+                    stop_scan = True
+                    break
+                continue
+
+            # Get user name (cached)
+            user_name = get_user_name(user_id) if user_id else None
+
+            # Get permalink
+            permalink = get_permalink(channel_id, ts)
+
+            # Chunk the message
+            text_chunks = chunk_text(text, chunk_size=500)
+
+            for idx, chunk_text_content in enumerate(text_chunks):
+                chunk_id = f"{channel_id}_{ts}_{idx}"
+
+                chunks_to_index.append({
+                    "id": chunk_id,
+                    "channel_id": channel_id,
+                    "channel_name": channel_name,
+                    "message_ts": ts,
+                    "chunk_index": idx,
+                    "text": chunk_text_content,
+                    "user_id": user_id or "",
+                    "user_name": user_name or "",
+                    "permalink": permalink or "",
+                })
+
+        if chunks_to_index:
+            # Generate embeddings in batches
+            logger.debug(f"Generating embeddings for {len(chunks_to_index)} chunks")
+            texts = [c["text"] for c in chunks_to_index]
+            chunk_embeddings = embeddings.embed_batch(texts, batch_size=BATCH_SIZE)
+
+            # Convert to MessageChunk models
+            message_chunks = []
+            for chunk_data, embedding in zip(chunks_to_index, chunk_embeddings):
+                message_chunks.append(
+                    MessageChunk(
+                        id=chunk_data["id"],
+                        channel_id=chunk_data["channel_id"],
+                        channel_name=chunk_data["channel_name"],
+                        message_ts=chunk_data["message_ts"],
+                        chunk_index=chunk_data["chunk_index"],
+                        text=chunk_data["text"],
+                        embedding=embedding,
+                        user_id=chunk_data["user_id"],
+                        user_name=chunk_data["user_name"],
+                        permalink=chunk_data["permalink"],
+                    )
+                )
+
+            # Bulk insert per page
+            indexed = repository.upsert_chunks(message_chunks)
+            total_indexed += indexed
+            logger.info(f"Indexed {indexed} chunks from #{channel_name}")
+
+        if stop_scan:
+            break
+
+        if reached_oldest:
+            logger.info(
+                "Reached oldest boundary in #%s (oldest=%s), stopping pagination",
+                channel_name,
+                oldest,
+            )
+            break
+
+        cursor = response.get("response_metadata", {}).get("next_cursor")
+        if not cursor:
+            break
+
+        time.sleep(1)
+
+    return (total_indexed, total_skipped)

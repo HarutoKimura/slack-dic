@@ -47,6 +47,7 @@ class SearchResult(BaseModel):
     id: str
     channel_name: Optional[str]
     text: str
+    message_ts: Optional[str]
     permalink: Optional[str]
     user_name: Optional[str]
     similarity: float = Field(..., ge=0.0, le=1.0)

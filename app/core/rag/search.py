@@ -18,7 +18,7 @@ def search(
     query: str,
     repository: Optional[MessageRepository] = None,
     embeddings: Optional[BedrockEmbeddings] = None,
-    top_k: int = 5,
+    top_k: int = 25,
     min_similarity: float = 0.25,
     channel_filter: Optional[str] = None,
 ) -> list[SearchResult]:
