@@ -38,7 +38,7 @@ A serverless Slack RAG (Retrieval-Augmented Generation) bot that acts as an inte
 │                                      ▼                          ▼           │
 │                     ┌───────────────────────────────────────────────────┐   │
 │                     │                Amazon Bedrock                      │   │
-│                     │     (Titan Embeddings + Claude 3 Haiku)           │   │
+│                     │   (Titan Embeddings + Claude 3.5 Sonnet)          │   │
 │                     └───────────────────────────────────────────────────┘   │
 │                                                                              │
 └──────────────────────────────────────────────────────────────────────────────┘
@@ -90,6 +90,30 @@ psql -h localhost -U postgres -d slack_rag -f scripts/init_database.sql
 python -m pytest tests/ -v
 ```
 
+## Usage
+
+Once deployed, interact with the bot in two ways:
+
+**DM the bot directly:**
+```
+You: 先月のプロジェクト進捗について教えて
+Bot: #general チャンネルでの投稿によると、先月のプロジェクト進捗は...
+     [Source: #general, 2026-02-15]
+```
+
+**@mention in a channel:**
+```
+You: @SlackRAGBot What was decided about the API redesign?
+Bot: Based on discussions in #engineering, the team decided to...
+     [Source: #engineering, 2026-02-10]
+```
+
+**Greetings and small talk** are handled naturally without searching the database:
+```
+You: こんにちは
+Bot: こんにちは！何かお手伝いできることはありますか？
+```
+
 ### AWS Deployment
 
 ```bash
@@ -106,13 +130,26 @@ aws ssm put-parameter \
 
 # 2. Request Bedrock model access (AWS Console)
 # - amazon.titan-embed-text-v1
-# - anthropic.claude-3-haiku-20240307-v1:0
+# - anthropic.claude-3-5-sonnet-20240620-v1:0
 
 # 3. Deploy
 ./scripts/deploy.sh deploy
 
 # 4. Configure Slack app with the WebhookUrl from output
 ```
+
+#### Deploy Script Commands
+
+| Command | Description |
+|---------|-------------|
+| `bootstrap` | Bootstrap CDK (one-time per account/region) |
+| `setup` | Setup CDK environment and install dependencies |
+| `synth` | Synthesize CloudFormation templates |
+| `diff` | Show diff between current and deployed stacks |
+| `deploy` | Deploy all stacks (default) |
+| `destroy` | Destroy all stacks |
+| `init-db` | Initialize database schema via Data API |
+| `secrets` | Check Slack secrets in SSM |
 
 ## Project Structure
 
@@ -122,7 +159,7 @@ slack-dic/
 │   ├── core/                      # Shared business logic
 │   │   ├── bedrock/
 │   │   │   ├── embeddings.py      # Titan Embeddings client
-│   │   │   └── llm.py             # Claude 3 Haiku client
+│   │   │   └── llm.py             # Claude 3.5 Sonnet client
 │   │   ├── database/
 │   │   │   ├── connection.py      # Dual-mode DB connection (Data API / psycopg2)
 │   │   │   ├── repository.py      # CRUD + vector search
@@ -287,7 +324,7 @@ LIMIT 5;
 | Database | Aurora PostgreSQL Serverless v2 | pgvector for vector search |
 | DB Access | Data API | HTTP-based, no VPC needed for Lambda |
 | Embeddings | Amazon Bedrock Titan | 1536 dimensions, multilingual |
-| LLM | Amazon Bedrock Claude 3 Haiku | Fast, cost-effective |
+| LLM | Amazon Bedrock Claude 3.5 Sonnet | High-quality generation |
 | API | API Gateway HTTP API | Low latency, cost-effective |
 | Queue | SQS with DLQ | Async processing, error handling |
 | Scheduler | EventBridge | Hourly batch indexing |
@@ -312,6 +349,8 @@ LIMIT 5;
 | `SLACK_SIGNING_SECRET` | required | Webhook signature secret |
 | `AWS_REGION` | `us-east-1` | AWS region for Bedrock |
 | `LOG_LEVEL` | `INFO` | Logging level |
+| `LOOKBACK_HOURS` | `1` | Hours to look back for batch indexing |
+| `FULL_BACKFILL` | `false` | Index full channel history when `true` |
 
 #### AWS Lambda (set by CDK)
 

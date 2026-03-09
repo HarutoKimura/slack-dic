@@ -5,7 +5,7 @@
 #   - AWS CLI v2 configured with credentials
 #   - AWS CDK installed (npm install -g aws-cdk)
 #   - uv installed for Python dependency management
-#   - Bedrock model access granted (Titan Embeddings + Claude 3 Haiku)
+#   - Bedrock model access granted (Titan Embeddings + Claude 3.5 Sonnet)
 #
 # Usage:
 #   ./scripts/deploy.sh [deploy|synth|diff|destroy]
