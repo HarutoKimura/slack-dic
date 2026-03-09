@@ -1,75 +1,210 @@
-# Slack RAG Bot
+# Slack RAG Bot (Serverless)
 
-A Slack RAG (Retrieval-Augmented Generation) bot that acts as an intelligent knowledge base for your workspace. Ask questions via DM or @mention, and get answers based on your Slack message history.
+A serverless Slack RAG (Retrieval-Augmented Generation) bot that acts as an intelligent knowledge base for your workspace. Ask questions via DM or @mention, and get answers based on your Slack message history.
 
 **Supports both English and Japanese messages.**
-
-## What It Does
-
-- **Ask via DM**: Send a direct message to the bot → it searches ALL indexed channels → returns an answer with sources
-- **Ask via @mention**: Mention the bot in any channel → get answers from all indexed messages
-- **Auto-indexing**: New messages are automatically indexed in real-time
-- **Startup catch-up**: Missed messages while offline are indexed when the bot starts
-- **Bilingual**: Handles English and Japanese text with smart chunking for both languages
-
-## Quick Start
-
-```bash
-# 1. Install dependencies
-uv sync
-uv pip install -e .
-
-# 2. Configure environment
-cp .env.example .env
-# Edit .env with your API keys
-
-# 3. Join all public channels & index messages
-python scripts/join_all_channels.py
-python scripts/ingest_all_channels.py
-
-# 4. Start the bot
-python -m app.main
-```
 
 ## Architecture
 
 ```
-.
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                                 SLACK                                        │
+│                                                                              │
+│   @mention / DM (questions)              Messages (indexed hourly)          │
+│         │                                        │                           │
+└─────────┼────────────────────────────────────────┼───────────────────────────┘
+          │                                        │
+          ▼                                        │ (Slack API fetch)
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              AWS Cloud                                       │
+│                                                                              │
+│  ┌─────────────────┐        ┌─────────────────┐        ┌─────────────────┐  │
+│  │  API Gateway    │──────▶ │  Lambda         │──────▶ │  SQS Queue      │  │
+│  │  /slack/events  │        │  (Receiver)     │        │  (QA Queue)     │  │
+│  └─────────────────┘        └─────────────────┘        └────────┬────────┘  │
+│                                                                  │           │
+│  ┌─────────────────┐                                            ▼           │
+│  │  EventBridge    │        ┌─────────────────┐        ┌─────────────────┐  │
+│  │  (hourly)       │──────▶ │  Lambda         │        │  Lambda         │  │
+│  └─────────────────┘        │  (Batch Indexer)│        │  (QA Processor) │  │
+│                             └────────┬────────┘        └────────┬────────┘  │
+│                                      │                          │           │
+│                                      ▼                          ▼           │
+│                     ┌───────────────────────────────────────────────────┐   │
+│                     │          Aurora PostgreSQL Serverless v2          │   │
+│                     │              (pgvector + Data API)                │   │
+│                     └───────────────────────────────────────────────────┘   │
+│                                      │                          │           │
+│                                      ▼                          ▼           │
+│                     ┌───────────────────────────────────────────────────┐   │
+│                     │                Amazon Bedrock                      │   │
+│                     │   (Titan Embeddings + Claude 3.5 Sonnet)          │   │
+│                     └───────────────────────────────────────────────────┘   │
+│                                                                              │
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Key Features
+
+- **Serverless**: Pay only for what you use, auto-scaling, no idle costs
+- **All AWS**: Single vendor for billing, support, and compliance
+- **Hourly Batch Indexing**: Messages indexed every hour via EventBridge
+- **RAG-based Answers**: Semantic search + LLM generation for accurate responses
+- **Bilingual**: Handles English and Japanese with smart text chunking
+
+## What It Does
+
+| Trigger | Action |
+|---------|--------|
+| DM to bot | Search ALL indexed channels → return answer with sources |
+| @mention in channel | Search all indexed messages → reply in thread |
+| EventBridge (hourly) | Fetch new messages → chunk → embed → store in Aurora |
+
+## Quick Start
+
+### Prerequisites
+
+- Python 3.12+
+- [uv](https://github.com/astral-sh/uv) package manager
+- AWS CLI v2 configured
+- AWS CDK (`npm install -g aws-cdk`)
+- Docker Desktop (for local development)
+
+### Local Development
+
+```bash
+# 1. Install dependencies
+uv sync --extra dev
+
+# 2. Start PostgreSQL with pgvector
+docker compose up -d postgres
+
+# 3. Configure environment
+cp .env.example .env
+# Edit .env with your Slack tokens
+
+# 4. Initialize database
+psql -h localhost -U postgres -d slack_rag -f scripts/init_database.sql
+
+# 5. Run tests
+python -m pytest tests/ -v
+```
+
+## Usage
+
+Once deployed, interact with the bot in two ways:
+
+**DM the bot directly:**
+```
+You: 先月のプロジェクト進捗について教えて
+Bot: #general チャンネルでの投稿によると、先月のプロジェクト進捗は...
+     [Source: #general, 2026-02-15]
+```
+
+**@mention in a channel:**
+```
+You: @SlackRAGBot What was decided about the API redesign?
+Bot: Based on discussions in #engineering, the team decided to...
+     [Source: #engineering, 2026-02-10]
+```
+
+**Greetings and small talk** are handled naturally without searching the database:
+```
+You: こんにちは
+Bot: こんにちは！何かお手伝いできることはありますか？
+```
+
+### AWS Deployment
+
+```bash
+# 1. Store Slack secrets in SSM
+aws ssm put-parameter \
+  --name "/slack-rag/slack-bot-token" \
+  --value "xoxb-your-bot-token" \
+  --type SecureString
+
+aws ssm put-parameter \
+  --name "/slack-rag/slack-signing-secret" \
+  --value "your-signing-secret" \
+  --type SecureString
+
+# 2. Request Bedrock model access (AWS Console)
+# - amazon.titan-embed-text-v1
+# - anthropic.claude-3-5-sonnet-20240620-v1:0
+
+# 3. Deploy
+./scripts/deploy.sh deploy
+
+# 4. Configure Slack app with the WebhookUrl from output
+```
+
+#### Deploy Script Commands
+
+| Command | Description |
+|---------|-------------|
+| `bootstrap` | Bootstrap CDK (one-time per account/region) |
+| `setup` | Setup CDK environment and install dependencies |
+| `synth` | Synthesize CloudFormation templates |
+| `diff` | Show diff between current and deployed stacks |
+| `deploy` | Deploy all stacks (default) |
+| `destroy` | Destroy all stacks |
+| `init-db` | Initialize database schema via Data API |
+| `secrets` | Check Slack secrets in SSM |
+
+## Project Structure
+
+```
+slack-dic/
 ├── app/
-│   ├── main.py              # Entry point with startup indexing
-│   ├── settings.py          # Configuration (Pydantic)
-│   ├── slack_app.py         # Slack event handlers (DM, mention, real-time)
-│   ├── ingestion/
-│   │   ├── slack_fetch.py   # Fetch Slack messages
-│   │   ├── chunk.py         # Smart text chunking
-│   │   ├── realtime.py      # Real-time message indexing
-│   │   └── startup.py       # Startup catch-up indexing
-│   ├── rag/
-│   │   ├── embed.py         # OpenAI embeddings
-│   │   ├── store.py         # ChromaDB vector store
-│   │   ├── search.py        # Vector similarity search
-│   │   └── answer.py        # LLM answer generation
-│   └── utils/
-│       └── slack_links.py   # Slack permalink helpers
+│   ├── core/                      # Shared business logic
+│   │   ├── bedrock/
+│   │   │   ├── embeddings.py      # Titan Embeddings client
+│   │   │   └── llm.py             # Claude 3.5 Sonnet client
+│   │   ├── database/
+│   │   │   ├── connection.py      # Dual-mode DB connection (Data API / psycopg2)
+│   │   │   ├── repository.py      # CRUD + vector search
+│   │   │   └── models.py          # Pydantic models
+│   │   ├── rag/
+│   │   │   ├── search.py          # Vector similarity search
+│   │   │   └── answer.py          # RAG answer generation
+│   │   └── slack/
+│   │       ├── auth.py            # Signature verification
+│   │       └── client.py          # Slack WebClient wrapper
+│   │
+│   ├── handlers/                  # Lambda entry points
+│   │   ├── receiver.py            # Lambda 1: Webhook handler
+│   │   ├── qa_processor.py        # Lambda 2: Question answering
+│   │   └── batch_indexer.py       # Lambda 3: Hourly indexing
+│   │
+│   └── ingestion/
+│       └── chunk.py               # Smart text chunking (EN + JP)
+│
+├── infra/                         # AWS CDK Infrastructure
+│   ├── app.py                     # CDK entry point
+│   └── stacks/
+│       ├── database_stack.py      # Aurora Serverless v2 + VPC
+│       └── application_stack.py   # Lambda + API GW + SQS + EventBridge
+│
 ├── scripts/
-│   ├── ingest_all_channels.py  # Index all public channels
-│   ├── ingest_slack.py         # Index single channel
-│   ├── join_all_channels.py    # Bot joins all public channels
-│   └── ask_cli.py              # CLI testing
-├── .chroma/                 # Vector database (local storage)
-└── .env                     # Environment variables
+│   ├── deploy.sh                  # Deployment helper
+│   └── init_database.sql          # PostgreSQL schema with pgvector
+│
+├── tests/
+│   ├── conftest.py                # Shared fixtures
+│   └── unit/
+│       ├── test_chunking.py       # Text chunking tests
+│       ├── test_handlers.py       # Handler logic tests
+│       ├── test_repository.py     # Database tests
+│       └── test_slack_auth.py     # Authentication tests
+│
+├── docker-compose.yml             # PostgreSQL with pgvector (local dev)
+├── pyproject.toml                 # Dependencies
+└── .env.example                   # Environment template
 ```
 
 ## Setup
 
-### 1. Prerequisites
-
-- Python 3.11+
-- [uv](https://github.com/astral-sh/uv) package manager
-- OpenAI API key
-- Slack workspace with admin access
-
-### 2. Create Slack App
+### 1. Create Slack App
 
 Go to [api.slack.com/apps](https://api.slack.com/apps) → **Create New App**
 
@@ -79,7 +214,7 @@ Go to [api.slack.com/apps](https://api.slack.com/apps) → **Create New App**
 |-------|---------|
 | `channels:history` | Read messages in public channels |
 | `channels:read` | List public channels |
-| `channels:join` | Join public channels automatically |
+| `channels:join` | Join public channels |
 | `groups:history` | Read messages in private channels |
 | `groups:read` | List private channels |
 | `chat:write` | Send messages |
@@ -88,377 +223,242 @@ Go to [api.slack.com/apps](https://api.slack.com/apps) → **Create New App**
 | `im:write` | Send DM replies |
 | `app_mentions:read` | Respond to @mentions |
 | `users:read` | Get user info |
-| `users:read.email` | Get user emails |
 
 #### Event Subscriptions
 
-Subscribe to these bot events:
-- `app_mention` - Respond to @mentions
-- `message.channels` - Index public channel messages
-- `message.groups` - Index private channel messages
-- `message.im` - Receive DM questions
-- `member_joined_channel` - Auto-index when bot is invited to a channel
+**Important**: Use HTTP mode (not Socket Mode)
 
-#### App Home
+1. Enable Event Subscriptions
+2. Set Request URL to: `https://<api-gateway-id>.execute-api.<region>.amazonaws.com/slack/events`
+3. Subscribe to bot events:
+   - `app_mention` - Respond to @mentions
+   - `message.im` - Receive DM questions
 
-- Enable **Messages Tab**
-- Check **"Allow users to send messages"**
+### 2. Configure Environment
 
-#### Socket Mode
-
-- Enable Socket Mode
-- Generate App-Level Token with `connections:write` scope
-
-### 3. Configure Environment
-
-```bash
-cp .env.example .env
-```
-
-Edit `.env`:
+Copy `.env.example` to `.env` and configure:
 
 ```env
-# Required
-OPENAI_API_KEY=sk-...
-SLACK_BOT_TOKEN=xoxb-...
-SLACK_APP_TOKEN=xapp-...
+# Slack Configuration (Required)
+SLACK_BOT_TOKEN=xoxb-your-bot-token
+SLACK_SIGNING_SECRET=your-signing-secret
 
-# Optional - Indexing
-REALTIME_INDEX_ENABLED=true
-STARTUP_INDEX_ENABLED=true
-STARTUP_INDEX_HOURS=24
+# Database Configuration
+USE_DATA_API=false          # false for local, true for AWS Lambda
 
-# Optional - RAG
-MIN_SIMILARITY=0.25
-CHROMA_PERSIST_DIRECTORY=.chroma
-EMBEDDING_MODEL=text-embedding-3-small
-LLM_MODEL=gpt-5-mini-2025-08-07
+# Local PostgreSQL (when USE_DATA_API=false)
+DB_HOST=localhost
+DB_PORT=5432
+DB_USER=postgres
+DB_PASSWORD=postgres
+DATABASE_NAME=slack_rag
+
+# AWS Configuration
+AWS_REGION=us-east-1
+
+# Logging
+LOG_LEVEL=INFO
 ```
 
-### 4. Install & Run
+### 3. Deploy to AWS
 
-```bash
-# Install dependencies
-uv sync
-uv pip install -e .
-
-# Join all public channels (one-time)
-python scripts/join_all_channels.py
-
-# Index historical messages (one-time)
-python scripts/ingest_all_channels.py --limit 5000
-
-# Start the bot
-python -m app.main
-```
-
-## Usage
-
-### Ask Questions
-
-**Via DM (recommended for searching all channels):**
-```
-You: What is our deployment process?
-Bot: Based on messages from #engineering and #devops...
-     Sources: [links]
-```
-
-**Via @mention (in any channel):**
-```
-@rag-bot What was discussed about the new feature?
-```
-
-**Via /ask command:**
-```
-/ask Who is responsible for the billing system?
-```
-
-### Scripts
-
-```bash
-# Index all public channels
-python scripts/ingest_all_channels.py --limit 5000
-
-# Index single channel
-python scripts/ingest_slack.py --channel "general" --limit 2000
-
-# Join all public channels (bot must be member to index)
-python scripts/join_all_channels.py
-
-# Dry run (see what will be indexed/joined)
-python scripts/ingest_all_channels.py --dry-run
-python scripts/join_all_channels.py --dry-run
-
-# Check vector store status
-python -c "from app.rag.store import VectorStore; print(f'Docs: {VectorStore().count()}')"
-```
+See the [AWS Deployment Guide](docs/implementation_summary.md#aws-deployment-guide) for detailed instructions.
 
 ## How It Works
 
-### Indexing Flow
+### Data Flow 1: Question Answering
 
 ```
-Slack Message → Chunking → Embedding → ChromaDB
-                  ↓           ↓
-            600 chars    OpenAI API
-            smart split  text-embedding-3-small
+User @mentions bot or sends DM
+        │
+        ▼
+┌───────────────────────────────────────────────────────────────┐
+│ 1. Slack sends webhook to API Gateway                          │
+│ 2. Receiver Lambda verifies signature, sends to SQS            │
+│ 3. QA Processor Lambda picks up message                        │
+│ 4. Embed question using Bedrock Titan (1536 dims)              │
+│ 5. Query Aurora: SELECT by cosine similarity (top 5 chunks)    │
+│ 6. Build prompt with retrieved context                         │
+│ 7. Call Bedrock Claude to generate answer                      │
+│ 8. Post reply to Slack thread                                  │
+└───────────────────────────────────────────────────────────────┘
+        │
+        ▼
+User receives answer (typically 3-8 seconds)
 ```
 
-1. **Fetch**: Messages retrieved from Slack API
-2. **Chunk**: Split into ~600 char pieces at sentence boundaries
-3. **Embed**: Convert to 1536-dim vectors via OpenAI
-4. **Store**: Save in ChromaDB with metadata (channel, user, timestamp, permalink)
-
-### Search Flow
+### Data Flow 2: Message Indexing (Hourly)
 
 ```
-Question → Embedding → Vector Search → Top 5 chunks → LLM → Answer
-                           ↓
-                      ChromaDB
-                      cosine similarity
+EventBridge triggers every hour
+        │
+        ▼
+┌───────────────────────────────────────────────────────────────┐
+│ 1. Batch Indexer Lambda starts                                 │
+│ 2. Call Slack API: fetch messages from last hour              │
+│ 3. Filter: skip bot messages, short messages                  │
+│ 4. Chunk messages (respects URLs, code blocks, JP punctuation)│
+│ 5. Batch embed chunks using Bedrock Titan                      │
+│ 6. Bulk INSERT into Aurora (ON CONFLICT DO NOTHING)            │
+└───────────────────────────────────────────────────────────────┘
+        │
+        ▼
+Messages searchable within the hour
 ```
 
-1. **Embed question**: Same embedding model as indexing
-2. **Search**: Find most similar chunks in vector DB
-3. **Generate**: LLM creates answer using retrieved context
-4. **Cite**: Include source permalinks
+### Vector Search Query
 
-### Auto-Indexing
+```sql
+SELECT text, channel_name, 1 - (embedding <=> query_vector) AS similarity
+FROM slack_messages
+WHERE 1 - (embedding <=> query_vector) > 0.25
+ORDER BY embedding <=> query_vector
+LIMIT 5;
+```
 
-| Trigger | What happens |
-|---------|--------------|
-| Bot starts | Check for unindexed channels, then index last 24 hours |
-| Bot invited to channel | Automatically index channel history in background |
-| New message in channel | Index immediately (real-time) |
-| DM received | Search all indexed channels, return answer |
+## Technology Stack
 
-**No manual indexing required!** Once the bot is set up, it automatically handles:
-- Channels joined while offline (indexed on next startup)
-- New channel invitations (indexed immediately in background)
-- New messages (indexed in real-time)
+| Component | Technology | Notes |
+|-----------|------------|-------|
+| Runtime | AWS Lambda (Python 3.12) | Serverless, pay-per-use |
+| Database | Aurora PostgreSQL Serverless v2 | pgvector for vector search |
+| DB Access | Data API | HTTP-based, no VPC needed for Lambda |
+| Embeddings | Amazon Bedrock Titan | 1536 dimensions, multilingual |
+| LLM | Amazon Bedrock Claude 3.5 Sonnet | High-quality generation |
+| API | API Gateway HTTP API | Low latency, cost-effective |
+| Queue | SQS with DLQ | Async processing, error handling |
+| Scheduler | EventBridge | Hourly batch indexing |
+| Secrets | SSM Parameter Store | Slack tokens |
+| IaC | AWS CDK (Python) | Infrastructure as code |
 
 ## Configuration
 
+### Environment Variables
+
+#### Local Development
+
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `OPENAI_API_KEY` | required | OpenAI API key |
+| `USE_DATA_API` | `false` | Use psycopg2 for local PostgreSQL |
+| `DB_HOST` | `localhost` | PostgreSQL host |
+| `DB_PORT` | `5432` | PostgreSQL port |
+| `DB_USER` | `postgres` | PostgreSQL user |
+| `DB_PASSWORD` | `postgres` | PostgreSQL password |
+| `DATABASE_NAME` | `slack_rag` | Database name |
 | `SLACK_BOT_TOKEN` | required | Bot token (xoxb-...) |
-| `SLACK_APP_TOKEN` | required | App token for Socket Mode (xapp-...) |
-| `CHROMA_PERSIST_DIRECTORY` | `.chroma` | Vector DB location |
-| `EMBEDDING_MODEL` | `text-embedding-3-small` | OpenAI embedding model |
-| `LLM_MODEL` | `gpt-5-mini-2025-08-07` | OpenAI chat model |
-| `MIN_SIMILARITY` | `0.25` | Minimum similarity threshold |
-| `REALTIME_INDEX_ENABLED` | `true` | Auto-index new messages |
-| `REALTIME_INDEX_CHANNELS` | `""` (all) | Limit to specific channel IDs |
-| `STARTUP_INDEX_ENABLED` | `true` | Catch-up index on startup |
-| `STARTUP_INDEX_HOURS` | `24` | Hours to look back on startup |
+| `SLACK_SIGNING_SECRET` | required | Webhook signature secret |
+| `AWS_REGION` | `us-east-1` | AWS region for Bedrock |
+| `LOG_LEVEL` | `INFO` | Logging level |
+| `LOOKBACK_HOURS` | `1` | Hours to look back for batch indexing |
+| `FULL_BACKFILL` | `false` | Index full channel history when `true` |
+
+#### AWS Lambda (set by CDK)
+
+| Variable | Source | Description |
+|----------|--------|-------------|
+| `USE_DATA_API` | CDK | Always `true` in Lambda |
+| `CLUSTER_ARN` | CDK output | Aurora cluster ARN |
+| `SECRET_ARN` | CDK output | Secrets Manager ARN |
+| `DATABASE_NAME` | CDK | `slack_rag` |
+| `QA_QUEUE_URL` | CDK output | SQS queue URL |
+| `SLACK_BOT_TOKEN_PARAM` | CDK | SSM parameter name |
+| `SLACK_SIGNING_SECRET_PARAM` | CDK | SSM parameter name |
+| `ALLOWED_CHANNELS` | CDK (optional) | Channel filter (comma-separated) |
+
+## Testing
+
+```bash
+# Run all tests (requires PostgreSQL)
+python -m pytest tests/ -v
+
+# Run only unit tests (no PostgreSQL needed)
+python -m pytest tests/unit/test_slack_auth.py tests/unit/test_chunking.py tests/unit/test_handlers.py -v
+
+# Check database connection
+USE_DATA_API=false python -c "
+from app.core.database import MessageRepository
+r = MessageRepository()
+r.init_schema()
+print(f'Database ready! Count: {r.count()}')
+"
+```
+
+### Test Coverage
+
+| Test File | Tests | Coverage |
+|-----------|-------|----------|
+| `test_repository.py` | Database CRUD, vector search, similarity thresholds |
+| `test_slack_auth.py` | Signature verification, replay attack prevention |
+| `test_chunking.py` | Text splitting, Japanese support, URL preservation |
+| `test_handlers.py` | Message parsing, bot filtering, event structure |
+
+## Cost Estimate
+
+### Monthly (~$45)
+
+| Service | Usage | Cost |
+|---------|-------|------|
+| Aurora Serverless v2 | 0.5 ACU min | ~$40 |
+| Lambda | ~1000 invocations | ~$0.50 |
+| API Gateway | ~500 requests | ~$0.50 |
+| SQS | ~1000 messages | ~$0.01 |
+| Bedrock Titan | ~300K tokens | ~$0.03 |
+| Bedrock Claude | ~150K tokens | ~$0.20 |
+| CloudWatch | Logs | ~$3 |
+| **Total** | | **~$45/month** |
+
+### Cost Savings (Data API Architecture)
+
+| What We Avoided | Saved |
+|-----------------|-------|
+| NAT Gateway | ~$30/month |
+| VPC Endpoints | ~$15/month |
+| RDS Proxy | ~$15/month |
+| **Total Savings** | **~$60/month** |
 
 ## Troubleshooting
 
-### "Sending messages to this app has been turned off"
-
-1. Go to Slack App settings → **App Home**
-2. Enable **Messages Tab**
-3. Check **"Allow users to send Slash commands and messages"**
-4. Reinstall app to workspace
-
-### "not_in_channel" error when indexing
-
-The bot must be a member of channels to read messages:
-```bash
-python scripts/join_all_channels.py
-```
-
-### Bot doesn't respond to DMs
-
-1. Check `im:history`, `im:read`, `im:write` scopes are added
-2. Subscribe to `message.im` event
-3. Reinstall app after scope changes
-
-### Low quality answers / wrong sources
-
-- Increase indexed messages: `--limit 10000`
-- Check similarity threshold in `.env`: `MIN_SIMILARITY=0.2`
-- Verify content is indexed: check `store.count()`
-
-### Check indexed document count
+### Check CloudWatch Logs
 
 ```bash
-python -c "from app.rag.store import VectorStore; print(VectorStore().count())"
+# Receiver Lambda
+aws logs tail /aws/lambda/slack-rag-receiver --follow
+
+# QA Processor Lambda
+aws logs tail /aws/lambda/slack-rag-qa-processor --follow
+
+# Batch Indexer Lambda
+aws logs tail /aws/lambda/slack-rag-batch-indexer --follow
 ```
 
-### Clear and re-index
+### Check Dead Letter Queue
 
 ```bash
-rm -rf .chroma/
-python scripts/ingest_all_channels.py --limit 5000
+aws sqs get-queue-attributes \
+  --queue-url "$(aws sqs get-queue-url --queue-name slack-rag-dlq --query 'QueueUrl' --output text)" \
+  --attribute-names ApproximateNumberOfMessages
 ```
 
-## Docker Deployment
+### Common Issues
 
-### Quick Start with Docker
+| Issue | Solution |
+|-------|----------|
+| Slack webhook not responding | Check Receiver Lambda logs, verify signing secret |
+| Bot doesn't respond | Check QA Processor logs, verify bot token |
+| No search results | Run batch indexer manually, check indexed message count |
+| Low quality answers | Increase `top_k`, lower `min_similarity` threshold |
+
+### Check Indexed Document Count
 
 ```bash
-# Build and run
-docker compose up -d
+# Local
+python -c "from app.core.database import MessageRepository; print(MessageRepository().count())"
 
-# View logs
-docker compose logs -f
-
-# Stop
-docker compose down
-```
-
-Make sure your `.env` file contains:
-```env
-OPENAI_API_KEY=sk-...
-SLACK_BOT_TOKEN=xoxb-...
-SLACK_APP_TOKEN=xapp-...   # or SOCKET_MODE_TOKEN
-```
-
-### Docker Commands
-
-| Command | Description |
-|---------|-------------|
-| `docker compose up -d` | Start bot in background |
-| `docker compose up -d --build` | Rebuild and start |
-| `docker compose logs -f` | Watch logs in real-time |
-| `docker compose ps` | Check container status |
-| `docker compose restart` | Restart the bot |
-| `docker compose down` | Stop the bot |
-| `docker compose down -v` | Stop and delete vector DB data |
-
-### Data Persistence
-
-Vector database is stored in a Docker volume (`chroma-data`). Your indexed messages persist across container restarts.
-
-```bash
-# View volume
-docker volume ls | grep chroma
-
-# Backup volume (optional)
-docker run --rm -v slack-dic_chroma-data:/data -v $(pwd):/backup alpine tar czf /backup/chroma-backup.tar.gz /data
-```
-
-## Production Deployment
-
-### Phase 1: Local Testing
-1. Run on your machine with `python -m app.main` or Docker
-2. Vector DB stored in `.chroma/` folder (local) or Docker volume
-3. Good for validating with real data
-
-### Phase 2: Cloud Deployment (AWS EC2)
-
-1. Launch EC2 instance (t3.medium recommended for 10-50 users)
-2. Install Docker:
-   ```bash
-   sudo yum update -y
-   sudo yum install -y docker
-   sudo service docker start
-   sudo usermod -a -G docker ec2-user
-   ```
-3. Copy project files and `.env` to EC2
-4. Run with Docker:
-   ```bash
-   docker compose up -d
-   ```
-
-### Scaling Guide
-
-| Users | EC2 Instance | Notes |
-|-------|--------------|-------|
-| <10 | t3.small | Testing/development |
-| 10-50 | t3.medium | Small team |
-| 50-100 | t3.large | Consider managed vector DB |
-| 100+ | Multiple instances | Use Pinecone + HTTP mode |
-
-### Alternative Deployment Options
-- **Container**: AWS ECS, GCP Cloud Run, DigitalOcean App Platform
-- **PaaS**: Railway, Render, Heroku
-
-### Vector DB Options for Scale
-- **Self-hosted ChromaDB**: Current setup, good for <100 users
-- **Pinecone**: Managed vector DB (recommended for scale)
-- **Weaviate Cloud**: Alternative managed option
-- **PostgreSQL + pgvector**: If you need SQL
-
-## Data Storage
-
-| Data | Location | Persistence |
-|------|----------|-------------|
-| Vector embeddings | `.chroma/` | Local filesystem |
-| Configuration | `.env` | Local file |
-| Slack messages | Slack API | Fetched on-demand |
-
-## Step-by-Step Setup Guide
-
-### Complete Setup Flow
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│  1. CREATE SLACK APP                                        │
-│     api.slack.com/apps → Create New App                     │
-│     Add OAuth scopes, Event subscriptions, Enable Socket    │
-│     Mode, Enable Messages Tab in App Home                   │
-└─────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────┐
-│  2. INSTALL APP TO WORKSPACE                                │
-│     Install App → Copy Bot Token & App Token to .env        │
-└─────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────┐
-│  3. JOIN CHANNELS                                           │
-│     python scripts/join_all_channels.py                     │
-│     (Bot must be member of channels to read messages)       │
-└─────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────┐
-│  4. INDEX MESSAGES                                          │
-│     python scripts/ingest_all_channels.py                   │
-│     (Stores messages in vector database)                    │
-└─────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────┐
-│  5. START BOT                                               │
-│     python -m app.main                                      │
-│     (Now ready to answer questions!)                        │
-└─────────────────────────────────────────────────────────────┘
-                              ↓
-┌─────────────────────────────────────────────────────────────┐
-│  6. ASK QUESTIONS                                           │
-│     • Send DM to bot → searches ALL indexed channels        │
-│     • @mention in channel → answers from all channels       │
-│     • New messages auto-indexed while bot is running        │
-└─────────────────────────────────────────────────────────────┘
-```
-
-### Key Points
-
-| Requirement | Why |
-|-------------|-----|
-| Bot must join channel | Slack API requires membership to read messages |
-| Must run indexing script | Messages need to be stored in vector DB before searching |
-| No need to @mention before DM | DM works as soon as messages are indexed |
-
-### Adding a New Channel Later
-
-Simply invite the bot to the channel - it will automatically index the channel history:
-
-```
-/invite @your-bot-name
-```
-
-The bot will:
-1. Send a message: "Thanks for inviting me! I'm now indexing..."
-2. Index all messages in the background
-3. Notify when complete: "Indexing complete! I've indexed X messages"
-
-**No manual scripts needed!** The bot handles everything automatically.
-
-For bulk operations (e.g., joining all public channels at once):
-```bash
-python scripts/join_all_channels.py
+# AWS (via Lambda)
+aws lambda invoke \
+  --function-name slack-rag-batch-indexer \
+  --payload '{}' \
+  response.json
 ```
 
 ## Japanese Language Support
@@ -470,7 +470,31 @@ The bot automatically handles Japanese text:
 - **List markers**: `・` `①②③` `１.２.３.`
 - **Smart tokenization**: Adjusts for Japanese token density
 
-Works seamlessly with mixed English/Japanese content in the same workspace.
+Works seamlessly with mixed English/Japanese content.
+
+## Development
+
+### Adding New Features
+
+1. Create feature in `app/core/` for business logic
+2. Update handlers in `app/handlers/` if Lambda interface changes
+3. Update CDK stacks in `infra/stacks/` for infrastructure changes
+4. Add tests in `tests/unit/`
+
+### Code Style
+
+```bash
+# Format code
+ruff format .
+
+# Lint
+ruff check .
+```
+
+## Documentation
+
+- [Implementation Summary](docs/implementation_summary.md) - Technical details and deployment guide
+- [Migration Plan](docs/serverless_migration_plan.md) - Architecture decisions and migration strategy
 
 ## License
 
